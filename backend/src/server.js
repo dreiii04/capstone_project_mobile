@@ -79,7 +79,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const uploadsDir = path.join(__dirname, '..', 'uploads');
 const receiptsDir = path.join(uploadsDir, 'receipts');
-fs.mkdirSync(receiptsDir, { recursive: true });
+try {
+  fs.mkdirSync(receiptsDir, { recursive: true });
+} catch (err) {
+  console.warn('Could not create receipts directory (read-only file system?):', err.message);
+}
 
 const allowedReceiptMimeTypes = new Set([
   'image/jpeg',
