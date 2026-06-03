@@ -11,6 +11,8 @@ class HistoryItem {
   final String purpose; // New
   final String status;  // e.g., "Released", "Rejected"
   final bool isApproved;
+  final double totalAmount;
+  final String paymentType;
 
   HistoryItem({
     required this.title, 
@@ -18,6 +20,8 @@ class HistoryItem {
     required this.purpose,
     required this.status,
     required this.isApproved,
+    required this.totalAmount,
+    required this.paymentType,
   });
 }
 

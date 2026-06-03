@@ -52,9 +52,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  bool _isCompletedStatus(String status) {
+  bool _isHistoryStatus(String status) {
     final normalized = status.trim().toLowerCase();
-    return normalized == 'completed';
+    return normalized == 'completed' || normalized == 'rejected';
   }
 
   bool _isApprovedStatus(String status) {
@@ -190,7 +190,7 @@ class _HomeScreenState extends State<HomeScreen> {
           timeDiff < 1;
     });
 
-    if (!exists && !_isCompletedStatus(newRequest.status)) {
+    if (!exists && !_isHistoryStatus(newRequest.status)) {
       pending.insert(0, newRequest);
     }
   }
@@ -220,7 +220,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ? totalAmount
           : documentPrice;
 
-        if (!_isCompletedStatus(statusRaw)) {
+        if (!_isHistoryStatus(statusRaw)) {
           pending.add(PendingRequest(
             docName: docName,
             purpose: purpose,
@@ -237,14 +237,23 @@ class _HomeScreenState extends State<HomeScreen> {
         if (docName.isEmpty) continue;
         final purpose = item['purpose']?.toString().trim() ?? '';
         final statusRaw = item['status']?.toString().trim() ?? 'completed';
+        if (!_isHistoryStatus(statusRaw)) {
+          continue;
+        }
         final createdAt = _parseRequestDate(item['createdAt']);
         final status = _displayStatus(statusRaw);
+        final totalAmount = _parseAmount(
+          item['totalAmount'] ?? item['amount'] ?? item['documentPrice'],
+        );
+        final paymentType = item['paymentType']?.toString().trim() ?? '';
         history.add(HistoryItem(
           title: docName,
           date: createdAt,
           purpose: purpose,
           status: status,
           isApproved: _isApprovedStatus(statusRaw),
+          totalAmount: totalAmount,
+          paymentType: paymentType,
         ));
       }
 

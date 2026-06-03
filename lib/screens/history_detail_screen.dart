@@ -7,6 +7,19 @@ class HistoryDetailScreen extends StatelessWidget {
   final HistoryItem item;
   const HistoryDetailScreen({super.key, required this.item});
 
+  String _amountLabel(double value) {
+    if (value <= 0) return 'N/A';
+    return 'PHP ${value.toStringAsFixed(2)}';
+  }
+
+  String _paymentMethodLabel(String value) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized.isEmpty) return 'N/A';
+    if (normalized == 'receipt' || normalized == 'gcash') return 'GCash';
+    if (normalized == 'onsite') return 'Other Online Payment';
+    return value.trim();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -44,9 +57,8 @@ class HistoryDetailScreen extends StatelessWidget {
             ]),
             SizedBox(height: 15.h),
             _buildCard("Payment Summary", [
-              _row("Amount Paid:", "PHP 110.00"),
-              _row("Payment Method:", "GCash"),
-              _row("Reference No:", "8234-123-9901"),
+              _row("Amount Paid:", _amountLabel(item.totalAmount)),
+              _row("Payment Method:", _paymentMethodLabel(item.paymentType)),
               _row("Date Paid:", DateFormat('MMM d, y').format(item.date)),
             ]),
           ],
