@@ -21,7 +21,23 @@ class ProfileData {
   final String role;
   final String profileImageUrl;
 
-  bool get isAlumni => role.toLowerCase() == 'alumni';
+  bool get isPastStudent {
+    final normalized = role.trim().toLowerCase();
+    return normalized == 'alumni' || normalized == 'former_student';
+  }
+
+  String get roleLabel {
+    switch (role.trim().toLowerCase()) {
+      case 'former_student':
+        return 'Former student';
+      case 'alumni':
+        return 'Alumni';
+      case 'student':
+        return 'Current student';
+      default:
+        return role.trim();
+    }
+  }
 
   String get fullName {
     final combined = '${firstName.trim()} ${lastName.trim()}'.trim();

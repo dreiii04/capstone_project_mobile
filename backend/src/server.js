@@ -180,11 +180,13 @@ let receipts;
 let requests;
 let notifications;
 let transactions;
+let refunds;
 const memoryUsers = new Map();
 const memoryReceipts = [];
 const memoryRequests = [];
 const memoryNotifications = [];
 const memoryTransactions = [];
+const memoryRefunds = [];
 
 async function ensureDb() {
   if (!dbEnabled) return;
@@ -199,6 +201,7 @@ async function ensureDb() {
     requests = db.collection('requests');
     notifications = db.collection('notifications');
     transactions = db.collection('transactions');
+    refunds = db.collection('refunds');
   } catch (error) {
     throw new Error(`MongoDB connection failed: ${error.message}`);
   }
@@ -256,7 +259,17 @@ function getDocumentPrice(docName) {
 
 const emailRegex = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 const passwordRegex =
-  /^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).{8,}$/;
+  /^(?=\S{8,72}$)(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/;
+const personNameRegex = /^[\p{L}][\p{L}\p{M} .'-]*$/u;
+const studentIdRegex = /^[A-Za-z0-9][A-Za-z0-9-]{3,29}$/;
+const studentYearLevels = new Set([
+  '1st Year',
+  '2nd Year',
+  '3rd Year',
+  '4th Year',
+  '5th Year',
+  'Graduate Student',
+]);
 
 const otpStore = new Map();
 const registrationOtpStore = new Map();
@@ -369,7 +382,16 @@ function buildProfileResponse(user) {
 function normalizeRole(role) {
   const normalized = String(role || '').trim().toLowerCase();
   if (normalized === 'student') return 'student';
+  if (normalized === 'former_student') return 'former_student';
   return 'alumni';
+}
+
+function parseRegistrationRole(role) {
+  const normalized = String(role || '').trim().toLowerCase();
+  if (normalized === 'former_student' || normalized === 'alumni') {
+    return normalized;
+  }
+  return '';
 }
 
 function getCollectionForRole(role) {
@@ -405,7 +427,7 @@ async function getUserByEmailWithCollection(email, preferredRole) {
       if (student) return { user: student, collection: studentUsers };
     }
 
-    if (preference === 'alumni') {
+    if (preference && preference !== 'student') {
       const alumni = await alumniUsers.findOne(alumniQuery);
       if (alumni) return { user: alumni, collection: alumniUsers };
     }
@@ -677,7 +699,12 @@ function buildReceiptRecord({
     receiptImage: imageUrl || '',
     payerName: `${user?.firstName || ''} ${user?.lastName || ''}`.trim(),
     payerEmail: user?.email || '',
-    payerType: user?.role === 'alumni' ? 'Alumni' : 'Student',
+    payerType:
+      normalizeRole(user?.role) === 'alumni'
+        ? 'Alumni'
+        : normalizeRole(user?.role) === 'former_student'
+          ? 'Former Student'
+          : 'Student',
     status: 'Pending Verification',
     date: new Date(),
 
@@ -980,11 +1007,102 @@ function buildTransactionResponse(record) {
     purpose: record.purpose || '',
     status: record.status || record.state || 'completed',
     createdAt: record.createdAt || record.date || new Date().toISOString(),
-    paymentType: record.paymentType || '',
+    paymentType: record.paymentType || record.paymentMode || '',
     totalAmount: record.totalAmount ?? record.amount ?? null,
+    refundStatus: record.refundStatus || '',
     email: record.email || '',
     userId: record.userId ? String(record.userId) : '',
   };
+}
+
+async function revokeAllRefreshTokens(email) {
+  if (dbEnabled) {
+    const found = await getUserByEmailWithCollection(email);
+    if (!found?.collection) return;
+    await found.collection.updateOne(
+      { email },
+      { $set: { refreshTokens: [] } },
+    );
+    return;
+  }
+
+  const existing = memoryUsers.get(email);
+  if (!existing) return;
+  memoryUsers.set(email, { ...existing, refreshTokens: [] });
+}
+
+async function findTransactionForUser(user, transactionId) {
+  const userId = user?._id || user?.id;
+  const email = normalizeEmail(user?.email);
+  if ((!userId && !email) || !transactionId) return null;
+
+  if (dbEnabled) {
+    const ownerClauses = [];
+    if (userId && ObjectId.isValid(String(userId))) {
+      ownerClauses.push({ userId: new ObjectId(String(userId)) });
+    }
+    if (emailRegex.test(email)) ownerClauses.push({ email });
+    if (ownerClauses.length === 0) return null;
+
+    const idClauses = [{ id: transactionId }, { transactionId }];
+    if (ObjectId.isValid(transactionId)) {
+      idClauses.push({ _id: new ObjectId(transactionId) });
+    }
+    return transactions.findOne({
+      $and: [{ $or: ownerClauses }, { $or: idClauses }],
+    });
+  }
+
+  return memoryTransactions.find((record) => {
+    const recordId = String(record._id || record.id || record.transactionId || '');
+    const ownsRecord =
+      (userId && String(record.userId) === String(userId)) ||
+      (email && normalizeEmail(record.email) === email);
+    return ownsRecord && recordId === transactionId;
+  }) || null;
+}
+
+async function findRefundForTransaction(user, transactionId) {
+  const userId = user?._id || user?.id;
+  const email = normalizeEmail(user?.email);
+  if (dbEnabled) {
+    const ownerClauses = [];
+    if (userId && ObjectId.isValid(String(userId))) {
+      ownerClauses.push({ userId: new ObjectId(String(userId)) });
+    }
+    if (emailRegex.test(email)) ownerClauses.push({ email });
+    if (ownerClauses.length === 0) return null;
+    return refunds.findOne({ transactionId, $or: ownerClauses });
+  }
+
+  return memoryRefunds.find((record) =>
+    record.transactionId === transactionId &&
+    ((userId && String(record.userId) === String(userId)) ||
+      (email && normalizeEmail(record.email) === email))
+  ) || null;
+}
+
+async function createRefundRecord(record, transaction) {
+  if (dbEnabled) {
+    const result = await refunds.insertOne(record);
+    await transactions.updateOne(
+      { _id: transaction._id },
+      { $set: { refundStatus: 'pending', refundRequestedAt: record.createdAt } },
+    );
+    return result.insertedId;
+  }
+
+  const id = makeUserId();
+  memoryRefunds.push({ ...record, _id: id });
+  const index = memoryTransactions.indexOf(transaction);
+  if (index >= 0) {
+    memoryTransactions[index] = {
+      ...memoryTransactions[index],
+      refundStatus: 'pending',
+      refundRequestedAt: record.createdAt,
+    };
+  }
+  return id;
 }
 
 async function updateRequestStatusForPayment({
@@ -1333,41 +1451,77 @@ async function sendOtpResponse(res, { email, otp, purpose }) {
 }
 
 function validateRegisterPayload(body) {
+  const role = parseRegistrationRole(body.role);
   const firstName = String(body.firstName || '').trim();
   const lastName = String(body.lastName || '').trim();
-  const email = normalizeEmail(body.email);
-  const password = String(body.password || '').trim();
-  const schoolEmail = String(body.schoolEmail || '').trim();
+  const personalEmail = normalizeEmail(body.email);
+  const schoolEmail = normalizeEmail(body.schoolEmail);
+  const password = String(body.password || '');
   const studentId = String(body.studentId || '').trim();
   const yearLevel = String(body.yearLevel || '').trim();
   const program = String(body.program || '').trim();
+  const isStudent = role === 'student';
+  const email = isStudent ? schoolEmail : personalEmail;
 
-  if (firstName.length < 2 || lastName.length < 2) {
-    return { error: 'First name and last name are required (min 2 chars).' };
+  if (!role) {
+    return { error: 'Please select Former student or Alumni.' };
   }
 
-  if (!emailRegex.test(email)) {
-    return { error: 'Invalid email address.' };
+  if (firstName.length < 2 || firstName.length > 50 ||
+      !personNameRegex.test(firstName)) {
+    return { error: 'Enter a valid first name (2-50 characters).' };
+  }
+  if (lastName.length < 2 || lastName.length > 50 ||
+      !personNameRegex.test(lastName)) {
+    return { error: 'Enter a valid last name (2-50 characters).' };
+  }
+
+  if (isStudent && !emailRegex.test(schoolEmail)) {
+    return { error: 'Enter a valid school email address.' };
+  }
+  if (!isStudent && !emailRegex.test(personalEmail)) {
+    return { error: 'Enter a valid personal email address.' };
   }
 
   if (!passwordRegex.test(password)) {
     return {
       error:
-        'Password must be at least 8 chars and include uppercase, lowercase, number, and special character.',
+        'Password must be 8-72 characters with uppercase, lowercase, number, and special character, without spaces.',
     };
   }
 
-  if (schoolEmail && !emailRegex.test(schoolEmail)) {
-    return { error: 'Invalid school email address.' };
+  if (isStudent && !studentIdRegex.test(studentId)) {
+    return {
+      error: 'Student ID must be 4-30 letters, numbers, or hyphens.',
+    };
+  }
+
+  if (isStudent && !studentYearLevels.has(yearLevel)) {
+    return { error: 'Select a valid year level.' };
+  }
+
+  if (!isStudent) {
+    const graduationYear = Number(yearLevel);
+    const currentYear = new Date().getFullYear();
+    if (!/^\d{4}$/.test(yearLevel) ||
+        graduationYear < 1950 || graduationYear > currentYear) {
+      return { error: 'Select a valid graduation or last-attended year.' };
+    }
+  }
+
+  if (program.length < 2 || program.length > 100) {
+    return { error: 'Select a valid program.' };
   }
 
   return {
+    role,
     firstName,
     lastName,
     email,
     password,
-    schoolEmail,
-    studentId,
+    personalEmail: isStudent ? '' : personalEmail,
+    schoolEmail: isStudent ? schoolEmail : '',
+    studentId: isStudent ? studentId : '',
     yearLevel,
     program,
   };
@@ -1602,7 +1756,8 @@ app.post('/requests', requireAuth, async (req, res, next) => {
       lastName: user.lastName || '',
       personalEmail: user.personalEmail || user.email || '',
       schoolEmail: user.schoolEmail || '',
-      yearGraduated: user.role === 'alumni' ? user.yearLevel || '' : '',
+      yearGraduated:
+        normalizeRole(user.role) !== 'student' ? user.yearLevel || '' : '',
       program: user.program || '',
       docName,
       documentPrice,
@@ -1750,6 +1905,138 @@ app.get('/transactions', requireAuth, async (req, res, next) => {
     return res.json({
       success: true,
       transactions: records.map(buildTransactionResponse).filter(Boolean),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/refunds', requireAuth, async (req, res, next) => {
+  try {
+    const user = await getUserFromAuth(req.auth);
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'User not found.' });
+    }
+
+    const transactionId = String(req.body?.transactionId || '').trim();
+    const refundMethod = String(req.body?.refundMethod || '')
+      .trim()
+      .toLowerCase();
+    const accountName = String(req.body?.accountName || '').trim();
+    const accountNumber = String(req.body?.accountNumber || '')
+      .replace(/[^0-9]/g, '');
+    const bankName = String(req.body?.bankName || '').trim();
+    const reason = String(req.body?.reason || '').trim();
+
+    if (!transactionId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transaction is required.',
+      });
+    }
+    if (!['gcash', 'bank_transfer'].includes(refundMethod)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Choose a valid refund method.',
+      });
+    }
+    if (accountName.length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: 'Enter the account holder name.',
+      });
+    }
+    if (refundMethod === 'gcash' && !/^09\d{9}$/.test(accountNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Enter a valid 11-digit GCash number.',
+      });
+    }
+    if (refundMethod === 'bank_transfer' &&
+        (!bankName || accountNumber.length < 6 || accountNumber.length > 30)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Enter valid bank account details.',
+      });
+    }
+
+    const transaction = await findTransactionForUser(user, transactionId);
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Payment transaction not found.',
+      });
+    }
+
+    const transactionStatus = String(
+      transaction.status || transaction.state || '',
+    ).trim().toLowerCase();
+    const amount = toNonNegativeNumber(
+      transaction.totalAmount ?? transaction.amount,
+      0,
+    );
+    const paymentType = String(
+      transaction.paymentType || transaction.paymentMode || '',
+    ).trim();
+
+    if (transactionStatus !== 'rejected') {
+      return res.status(409).json({
+        success: false,
+        message: 'Only rejected requests can be refunded.',
+      });
+    }
+    if (amount <= 0 || !paymentType) {
+      return res.status(409).json({
+        success: false,
+        message: 'No received payment was found for this request.',
+      });
+    }
+
+    const existingRefund = await findRefundForTransaction(user, transactionId);
+    if (existingRefund) {
+      return res.status(409).json({
+        success: false,
+        message: 'A refund has already been requested for this payment.',
+        refundStatus: existingRefund.status || 'pending',
+      });
+    }
+
+    const createdAt = new Date().toISOString();
+    const refundRecord = {
+      transactionId,
+      userId: user._id || user.id,
+      email: normalizeEmail(user.email),
+      docName: transaction.docName || transaction.documentName ||
+        transaction.documentType || transaction.title || '',
+      amount,
+      paymentType,
+      refundMethod,
+      accountName,
+      accountNumber,
+      bankName: refundMethod === 'bank_transfer' ? bankName : '',
+      reason: reason || 'Document request was rejected.',
+      status: 'pending',
+      createdAt,
+      updatedAt: createdAt,
+    };
+
+    const refundId = await createRefundRecord(refundRecord, transaction);
+    await createNotificationRecord({
+      userId: user._id || user.id,
+      email: normalizeEmail(user.email),
+      title: 'Refund request received',
+      message: `Your refund request for ${refundRecord.docName || 'your document'} is now under review.`,
+      isRead: false,
+      createdAt,
+    });
+
+    return res.status(201).json({
+      success: true,
+      refundId: String(refundId),
+      refundStatus: 'pending',
+      message: 'Your refund request has been submitted.',
     });
   } catch (error) {
     return next(error);
@@ -1931,28 +2218,9 @@ app.post('/auth/register', async (req, res, next) => {
       return res.status(400).json({ success: false, message: parsed.error });
     }
 
-    const role = normalizeRole(req.body?.role);
-    const isStudent = role === 'student';
-    const schoolEmail = normalizeEmail(parsed.schoolEmail || parsed.email);
+    const role = parsed.role;
 
-    if (isStudent) {
-      if (!emailRegex.test(schoolEmail)) {
-        return res.status(400).json({
-          success: false,
-          message: 'School email is required for student accounts.',
-        });
-      }
-      if (!parsed.studentId) {
-        return res.status(400).json({
-          success: false,
-          message: 'Student ID is required for student accounts.',
-        });
-      }
-    }
-
-    const mailboxCheck = await validateEmailWithMailboxlayer(
-      isStudent ? schoolEmail : parsed.email,
-    );
+    const mailboxCheck = await validateEmailWithMailboxlayer(parsed.email);
     if (!mailboxCheck.isValid) {
       return res.status(400).json({
         success: false,
@@ -1960,7 +2228,7 @@ app.post('/auth/register', async (req, res, next) => {
       });
     }
 
-    const existing = await getUserByEmail(isStudent ? schoolEmail : parsed.email);
+    const existing = await getUserByEmail(parsed.email);
     if (existing) {
       return res
         .status(409)
@@ -1972,12 +2240,12 @@ app.post('/auth/register', async (req, res, next) => {
     const result = await createUserDocument({
       firstName: parsed.firstName,
       lastName: parsed.lastName,
-      email: isStudent ? schoolEmail : normalizeEmail(parsed.email),
-      personalEmail: isStudent ? '' : normalizeEmail(parsed.email),
+      email: parsed.email,
+      personalEmail: parsed.personalEmail,
       passwordHash,
       role,
-      schoolEmail: isStudent ? normalizeEmail(schoolEmail) : '',
-      studentId: isStudent ? parsed.studentId : '',
+      schoolEmail: parsed.schoolEmail,
+      studentId: parsed.studentId,
       yearLevel: parsed.yearLevel,
       course: parsed.program,
       program: parsed.program, // kept for backward compatibility with mobile code
@@ -2003,28 +2271,9 @@ app.post('/auth/register/request-otp', async (req, res, next) => {
       return res.status(400).json({ success: false, message: parsed.error });
     }
 
-    const role = normalizeRole(req.body?.role);
-    const isStudent = role === 'student';
-    const schoolEmail = normalizeEmail(parsed.schoolEmail || parsed.email);
+    const role = parsed.role;
 
-    if (isStudent) {
-      if (!emailRegex.test(schoolEmail)) {
-        return res.status(400).json({
-          success: false,
-          message: 'School email is required for student accounts.',
-        });
-      }
-      if (!parsed.studentId) {
-        return res.status(400).json({
-          success: false,
-          message: 'Student ID is required for student accounts.',
-        });
-      }
-    }
-
-    const mailboxCheck = await validateEmailWithMailboxlayer(
-      isStudent ? schoolEmail : parsed.email,
-    );
+    const mailboxCheck = await validateEmailWithMailboxlayer(parsed.email);
     if (!mailboxCheck.isValid) {
       return res.status(400).json({
         success: false,
@@ -2032,25 +2281,21 @@ app.post('/auth/register/request-otp', async (req, res, next) => {
       });
     }
 
-    const existing = await getUserByEmail(isStudent ? schoolEmail : parsed.email);
+    const existing = await getUserByEmail(parsed.email);
     if (existing) {
       return res
         .status(409)
         .json({ success: false, message: 'Email already exists.' });
     }
 
-    const otp = putOtp(registrationOtpStore, isStudent ? schoolEmail : parsed.email, {
+    const otp = putOtp(registrationOtpStore, parsed.email, {
       payload: {
         ...parsed,
         role,
-        email: isStudent ? schoolEmail : parsed.email,
-        personalEmail: isStudent ? '' : parsed.email,
-        schoolEmail: isStudent ? schoolEmail : '',
-        studentId: isStudent ? parsed.studentId : '',
       },
     });
     return await sendOtpResponse(res, {
-      email: isStudent ? schoolEmail : parsed.email,
+      email: parsed.email,
       otp,
       purpose: 'registration',
     });
@@ -2109,6 +2354,14 @@ app.post('/auth/register/verify-otp', async (req, res, next) => {
         .json({ success: false, message: 'Email already exists.' });
     }
 
+    const role = parseRegistrationRole(payload.role);
+    if (!role) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid registration account type.',
+      });
+    }
+
     const passwordHash = await bcrypt.hash(payload.password, 12);
     const result = await createUserDocument({
       firstName: payload.firstName,
@@ -2116,7 +2369,7 @@ app.post('/auth/register/verify-otp', async (req, res, next) => {
       email: normalizeEmail(payload.email),
       personalEmail: normalizeEmail(payload.personalEmail || ''),
       passwordHash,
-      role: payload.role || 'alumni',
+      role,
       schoolEmail: normalizeEmail(payload.schoolEmail || ''),
       studentId: payload.studentId || '',
       yearLevel: payload.yearLevel,
@@ -2252,27 +2505,38 @@ app.post('/auth/forgot-password/request-otp', async (req, res, next) => {
 
     const user = await getUserByEmail(email);
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'No account found for this email.',
+      return res.json({
+        success: true,
+        message:
+          'If an account exists for this email, a verification code has been sent.',
+        expiresInSeconds: Number(OTP_TTL_MINUTES) * 60,
+        resendAfterSeconds: 30,
       });
     }
 
-    const mailboxCheck = await validateEmailWithMailboxlayer(email);
-    if (!mailboxCheck.isValid) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email is not deliverable. Please use a valid email.',
+    const pendingOtp = otpStore.get(email);
+    const lastSentAt = Number(pendingOtp?.lastSentAt || 0);
+    const elapsedSinceSend = Date.now() - lastSentAt;
+    if (lastSentAt && elapsedSinceSend < 30 * 1000) {
+      return res.json({
+        success: true,
+        message: 'A verification code was recently sent.',
+        expiresInSeconds: Math.max(
+          0,
+          Math.ceil((pendingOtp.expiresAt - Date.now()) / 1000),
+        ),
+        resendAfterSeconds: Math.ceil((30 * 1000 - elapsedSinceSend) / 1000),
       });
     }
 
-    const otp = putOtp(otpStore, email);
+    const otp = putOtp(otpStore, email, { lastSentAt: Date.now() });
 
-    return await sendOtpResponse(res, {
+    const response = await sendOtpResponse(res, {
       email,
       otp,
       purpose: 'password-reset',
     });
+    return response;
   } catch (error) {
     return next(error);
   }
@@ -2334,7 +2598,7 @@ app.post('/auth/forgot-password/reset', async (req, res, next) => {
     cleanupOtpData();
 
     const resetToken = String(req.body?.resetToken || '').trim();
-    const newPassword = String(req.body?.newPassword || '').trim();
+    const newPassword = String(req.body?.newPassword || '');
 
     if (!resetToken) {
       return res
@@ -2346,7 +2610,7 @@ app.post('/auth/forgot-password/reset', async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message:
-          'Password must be at least 8 chars and include uppercase, lowercase, number, and special character.',
+          'Password must be 8-72 characters with uppercase, lowercase, number, and special character, without spaces.',
       });
     }
 
@@ -2361,6 +2625,7 @@ app.post('/auth/forgot-password/reset', async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
     await updateUserPassword(tokenRecord.email, passwordHash);
+    await revokeAllRefreshTokens(tokenRecord.email);
 
     resetTokenStore.delete(resetToken);
 
@@ -2400,6 +2665,7 @@ async function start() {
       requests = db.collection('requests');
       notifications = db.collection('notifications');
       transactions = db.collection('transactions');
+      refunds = db.collection('refunds');
       try {
         for (const collection of [alumniUsers, studentUsers]) {
           try {
@@ -2420,6 +2686,10 @@ async function start() {
         await notifications.createIndex({ email: 1, createdAt: -1 });
         await transactions.createIndex({ userId: 1, createdAt: -1 });
         await transactions.createIndex({ email: 1, createdAt: -1 });
+        await refunds.createIndex(
+          { transactionId: 1, userId: 1 },
+          { unique: true },
+        );
         await normalizeEmailsInCollection(studentUsers, 'students');
         await normalizeEmailsInCollection(alumniUsers, 'alumni');
       } catch (err) {

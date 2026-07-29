@@ -7,6 +7,7 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/mongo_data_api_service.dart';
 import '../widgets/custom_font.dart';
+import '../widgets/simple_message_dialog.dart';
 
 
 class PaymentMethodScreen extends StatefulWidget {
@@ -109,13 +110,10 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            "Upload failed: ${e.toString().replaceFirst('Exception: ', '')}",
-          ),
-          backgroundColor: Colors.red,
-        ),
+      await showSimpleMessageDialog(
+        context,
+        e.toString().replaceFirst('Exception: ', ''),
+        title: 'Upload failed',
       );
     } finally {
       if (mounted) {
@@ -176,12 +174,23 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
                 ],
               ),
             ),
-            const Spacer(),
-            Row(
-              children: [
-                Checkbox(value: _acknowledged, activeColor: const Color(0xFF5D7E97), onChanged: (val) => setState(() => _acknowledged = val!)),
-                Expanded(child: CustomFont(text: "I acknowledge that I will upload the required payment receipt.", fontSize: 10.sp, color: Colors.black54)),
-              ],
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _acknowledged,
+              activeColor: const Color(0xFF233446),
+              controlAffinity: ListTileControlAffinity.leading,
+              title: CustomFont(
+                text: "I confirm the details and uploaded receipt are correct.",
+                fontSize: 11.sp,
+                color: Colors.black87,
+              ),
+              onChanged: _isSubmitting
+                  ? null
+                  : (value) {
+                      setState(() {
+                        _acknowledged = value ?? false;
+                      });
+                    },
             ),
             if (!_hasReceipt)
               Padding(

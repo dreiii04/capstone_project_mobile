@@ -67,10 +67,12 @@ class _HomeScreenState extends State<HomeScreen> {
   String _displayStatus(String status) {
     final normalized = status.trim().toLowerCase();
     if (normalized.isEmpty) return 'PENDING FOR PAYMENT';
-    if (normalized == 'pending_payment' || normalized == 'pending for payment') {
+    if (normalized == 'pending_payment' ||
+        normalized == 'pending for payment') {
       return 'PENDING FOR PAYMENT';
     }
-    if (normalized == 'pending_completion' || normalized == 'pending to complete') {
+    if (normalized == 'pending_completion' ||
+        normalized == 'pending to complete') {
       return 'PENDING TO COMPLETE';
     }
     return normalized.toUpperCase();
@@ -181,10 +183,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (newRequest == null) return;
 
     final exists = pending.any((item) {
-      final timeDiff = item.dateCreated
-          .difference(newRequest.dateCreated)
-          .inMinutes
-          .abs();
+      final timeDiff =
+          item.dateCreated.difference(newRequest.dateCreated).inMinutes.abs();
       return item.docName == newRequest.docName &&
           item.purpose == newRequest.purpose &&
           timeDiff < 1;
@@ -203,7 +203,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final items = await MongoDataApiService.instance.fetchRequests();
-      final transactions = await MongoDataApiService.instance.fetchTransactions();
+      final transactions =
+          await MongoDataApiService.instance.fetchTransactions();
       final pending = <PendingRequest>[];
       final history = <HistoryItem>[];
 
@@ -216,9 +217,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final status = _displayStatus(statusRaw);
         final documentPrice = _parseAmount(item['documentPrice']);
         final totalAmount = _parseAmount(item['totalAmount']);
-        final resolvedTotal = totalAmount > 0
-          ? totalAmount
-          : documentPrice;
+        final resolvedTotal = totalAmount > 0 ? totalAmount : documentPrice;
 
         if (!_isHistoryStatus(statusRaw)) {
           pending.add(PendingRequest(
@@ -246,7 +245,10 @@ class _HomeScreenState extends State<HomeScreen> {
           item['totalAmount'] ?? item['amount'] ?? item['documentPrice'],
         );
         final paymentType = item['paymentType']?.toString().trim() ?? '';
+        final transactionId = item['id']?.toString().trim() ?? '';
+        final refundStatus = item['refundStatus']?.toString().trim() ?? '';
         history.add(HistoryItem(
+          transactionId: transactionId,
           title: docName,
           date: createdAt,
           purpose: purpose,
@@ -254,6 +256,7 @@ class _HomeScreenState extends State<HomeScreen> {
           isApproved: _isApprovedStatus(statusRaw),
           totalAmount: totalAmount,
           paymentType: paymentType,
+          refundStatus: refundStatus,
         ));
       }
 
@@ -273,8 +276,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  int get _unreadCount =>
-      _notifications.where((item) => !item.isRead).length;
+  int get _unreadCount => _notifications.where((item) => !item.isRead).length;
 
   void _openNotifications() {
     setState(() {
@@ -286,12 +288,21 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) =>
-            NotificationScreen(notifications: _notifications),
+        builder: (context) => NotificationScreen(notifications: _notifications),
       ),
     );
   }
 
+  void _openProfile() {
+    _onTappedBar(3);
+  }
+
+  Future<void> _refreshHome() async {
+    await Future.wait([
+      _loadRequests(),
+      _loadNotifications(),
+    ]);
+  }
 
   void _onTappedBar(int value) {
     setState(() {
@@ -314,10 +325,12 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-
   @override
   Widget build(BuildContext context) {
+    final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
+
     return Scaffold(
+      backgroundColor: const Color(0xFFF4F7FA),
       body: PageView(
         controller: _pageController,
         onPageChanged: (page) {
@@ -336,46 +349,52 @@ class _HomeScreenState extends State<HomeScreen> {
           HistoryScreen(
             historyList: _isLoadingRequests ? [] : _historyItems,
           ),
+          const ProfileScreen(),
         ],
       ),
-      bottomNavigationBar: Container(
-        height: 80.h,
+      bottomNavigationBar: DecoratedBox(
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.only(
-            topLeft: Radius.circular(20.r),
-            topRight: Radius.circular(20.r),
-          ),
-          boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10)],
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            Expanded(child: _buildNavigationItem(Icons.home_outlined, Icons.home, 0)),
-            Expanded(child: _buildNavigationItem(Icons.access_time, Icons.access_time_filled, 1)),
-            Expanded(child: _buildNavigationItem(Icons.assignment_outlined, Icons.assignment, 2)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withAlpha(18),
+              blurRadius: 18,
+              offset: const Offset(0, -4),
+            ),
           ],
         ),
-      ),
-    );
-  }
-
-  
-  Widget _buildNavigationItem(IconData icon, IconData activeIcon, int index) {
-    bool isSelected = _selectedIndex == index;
-    return GestureDetector(
-      onTap: () => _onTappedBar(index),
-      child: Container(
-        alignment: Alignment.center,
-        height: 80.h,
-        decoration: BoxDecoration(
-          color: isSelected ? fbPrimary : Colors.transparent,
-          borderRadius: BorderRadius.circular(10.r),
-        ),
-        child: Icon(
-          isSelected ? activeIcon : icon,
-          color: isSelected ? Colors.white : fbDarkPrimary,
-          size: 28.sp,
+        child: SafeArea(
+          top: false,
+          child: NavigationBar(
+            height: isTablet ? 76 : 70.h,
+            selectedIndex: _selectedIndex,
+            onDestinationSelected: _onTappedBar,
+            backgroundColor: Colors.white,
+            indicatorColor: const Color(0xFFDDEAF2),
+            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+            destinations: const [
+              NavigationDestination(
+                icon: Icon(Icons.home_outlined),
+                selectedIcon: Icon(Icons.home),
+                label: 'Home',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.schedule_outlined),
+                selectedIcon: Icon(Icons.schedule),
+                label: 'Pending',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.history_outlined),
+                selectedIcon: Icon(Icons.history),
+                label: 'History',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.person_outline_rounded),
+                selectedIcon: Icon(Icons.person_rounded),
+                label: 'Profile',
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -384,305 +403,386 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildHomeContent(BuildContext context) {
     final pendingCount = _pendingRequests.length;
     final historyCount = _historyItems.length;
+    final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
 
-    return SingleChildScrollView(
-      child: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF1B3B57), Color(0xFF467599)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.vertical(
-                bottom: Radius.circular(28.r),
+    return RefreshIndicator(
+      color: fbPrimary,
+      onRefresh: _refreshHome,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: SafeArea(
+          bottom: false,
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 720),
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(
+                  isTablet ? 28 : 18.w,
+                  isTablet ? 20 : 12.h,
+                  isTablet ? 28 : 18.w,
+                  isTablet ? 36 : 28.h,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildReferenceTopBar(),
+                    SizedBox(height: isTablet ? 24 : 18.h),
+                    _buildRequestOverview(
+                      pendingCount: pendingCount,
+                      historyCount: historyCount,
+                    ),
+                  ],
+                ),
               ),
             ),
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReferenceTopBar() {
+    final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
+
+    return Row(
+      children: [
+        Semantics(
+          button: true,
+          label: 'Open profile',
+          child: Material(
+            color: const Color(0xFFE7EEF3),
+            shape: const CircleBorder(),
+            child: InkWell(
+              onTap: _openProfile,
+              customBorder: const CircleBorder(),
+              child: SizedBox(
+                width: isTablet ? 52 : 45.r,
+                height: isTablet ? 52 : 45.r,
+                child: Icon(
+                  Icons.person_outline_rounded,
+                  color: fbDarkPrimary,
+                  size: isTablet ? 28 : 25.sp,
+                ),
+              ),
+            ),
+          ),
+        ),
+        SizedBox(width: isTablet ? 14 : 11.w),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Welcome',
+                style: TextStyle(
+                  color: const Color(0xFF7A858D),
+                  fontFamily: 'Frutiger',
+                  fontSize: isTablet ? 13 : 10.sp,
+                ),
+              ),
+              SizedBox(height: 3.h),
+              Image.asset(
+                'assets/logo/logo.png',
+                width: isTablet ? 150 : 128.w,
+                height: isTablet ? 40 : 34.h,
+                fit: BoxFit.contain,
+                alignment: Alignment.centerLeft,
+              ),
+            ],
+          ),
+        ),
+        _buildTopActionButton(
+          icon: Icons.notifications_none_rounded,
+          label: _unreadCount == 0
+              ? 'Open notifications'
+              : 'Open notifications, $_unreadCount unread',
+          badge: _unreadCount,
+          onTap: _openNotifications,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTopActionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    int badge = 0,
+  }) {
+    final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
+
+    return Semantics(
+      button: true,
+      label: label,
+      child: Material(
+        color: Colors.white,
+        shape: const CircleBorder(),
+        elevation: 1,
+        shadowColor: Colors.black12,
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              SizedBox(
+                width: isTablet ? 48 : 41.r,
+                height: isTablet ? 48 : 41.r,
+                child: Icon(
+                  icon,
+                  size: isTablet ? 24 : 21.sp,
+                  color: fbDarkPrimary,
+                ),
+              ),
+              if (badge > 0)
                 Positioned(
-                  top: -40.h,
-                  right: -30.w,
+                  top: 1,
+                  right: 1,
                   child: Container(
-                    width: 140.r,
-                    height: 140.r,
+                    width: 9.r,
+                    height: 9.r,
                     decoration: BoxDecoration(
-                      color: Colors.white.withAlpha(20),
+                      color: const Color(0xFFFF5A6F),
                       shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 1.5),
                     ),
                   ),
                 ),
-                Positioned(
-                  bottom: -60.h,
-                  left: -20.w,
-                  child: Container(
-                    width: 180.r,
-                    height: 180.r,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withAlpha(13),
-                      shape: BoxShape.circle,
-                    ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRequestOverview({
+    required int pendingCount,
+    required int historyCount,
+  }) {
+    final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
+
+    return Container(
+      width: double.infinity,
+      height: isTablet ? 285 : 245.h,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24.r),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF73899A).withAlpha(48),
+            blurRadius: 22,
+            offset: const Offset(0, 9),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24.r),
+        child: Container(
+          padding: EdgeInsets.all(isTablet ? 24 : 18.r),
+          decoration: const BoxDecoration(color: Color(0xFF5A819B)),
+          child: Stack(
+            children: [
+              Positioned(
+                right: -28.r,
+                bottom: -38.r,
+                child: Container(
+                  width: 145.r,
+                  height: 145.r,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withAlpha(13),
+                    shape: BoxShape.circle,
                   ),
                 ),
-                SafeArea(
-                  child: Padding(
-                    padding: EdgeInsets.fromLTRB(20.w, 14.h, 20.w, 24.h),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.symmetric(
+                      horizontal: 2.w,
+                      vertical: 4.h,
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            GestureDetector(
-                              onTap: _openNotifications,
-                              child: Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  CircleAvatar(
-                                    backgroundColor: Colors.white,
-                                    radius: 20.r,
-                                    child: Icon(
-                                      Icons.notifications,
-                                      size: 22.sp,
-                                      color: fbPrimary,
-                                    ),
-                                  ),
-                                  if (_unreadCount > 0)
-                                    Positioned(
-                                      right: -4.w,
-                                      top: -4.h,
-                                      child: Container(
-                                        padding: EdgeInsets.symmetric(
-                                          horizontal: 6.w,
-                                          vertical: 2.h,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.red,
-                                          borderRadius:
-                                              BorderRadius.circular(12.r),
-                                        ),
-                                        child: Text(
-                                          _unreadCount > 99
-                                              ? '99+'
-                                              : _unreadCount.toString(),
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 10.sp,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                ],
+                            Text(
+                              'My requests',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontFamily: 'Klavika',
+                                fontSize: isTablet ? 21 : 16.sp,
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
-                            GestureDetector(
-                              onTap: () => Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => const ProfileScreen(),
-                                ),
-                              ),
-                              child: CircleAvatar(
-                                backgroundColor: Colors.white,
-                                radius: 20.r,
-                                child: Icon(
-                                  Icons.person,
-                                  size: 22.sp,
-                                  color: fbPrimary,
-                                ),
-                              ),
+                            const Spacer(),
+                            _buildOverviewIcon(
+                              Icons.refresh_rounded,
+                              onTap: _refreshHome,
                             ),
                           ],
                         ),
-                        SizedBox(height: 20.h),
-                        Text(
-                          "Welcome back",
-                          style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 14.sp,
-                            fontFamily: 'Frutiger',
-                            letterSpacing: 0.6,
-                          ),
-                        ),
-                        SizedBox(height: 6.h),
-                        Text(
-                          "VerifiTOR",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 34.sp,
-                            fontFamily: 'Klavika',
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 1.2,
-                          ),
-                        ),
-                        SizedBox(height: 6.h),
-                        Text(
-                          "Track requests, payments, and releases in one place.",
-                          style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13.sp,
-                            fontFamily: 'Frutiger',
-                          ),
-                        ),
-                        SizedBox(height: 18.h),
+                        SizedBox(height: isTablet ? 18 : 12.h),
                         Row(
                           children: [
-                            _buildStatPill(
-                              label: 'Pending',
-                              value: pendingCount.toString(),
-                              color: const Color(0xFFFFC857),
+                            Expanded(
+                              child: _buildOverviewMetric(
+                                label: 'Active',
+                                value: pendingCount.toString(),
+                                suffix:
+                                    pendingCount == 1 ? 'request' : 'requests',
+                              ),
                             ),
-                            SizedBox(width: 10.w),
-                            _buildStatPill(
-                              label: 'History',
-                              value: historyCount.toString(),
-                              color: const Color(0xFF7BD389),
+                            Container(
+                              width: 1,
+                              height: isTablet ? 50 : 40.h,
+                              color: Colors.white30,
+                            ),
+                            SizedBox(width: isTablet ? 26 : 18.w),
+                            Expanded(
+                              child: _buildOverviewMetric(
+                                label: 'Records',
+                                value: historyCount.toString(),
+                                suffix: 'history',
+                              ),
                             ),
                           ],
                         ),
                       ],
                     ),
                   ),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 20.w, vertical: 10.h),
-            child: Container(
-              width: double.infinity,
-              padding: EdgeInsets.all(22.r),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(18.r),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withAlpha(20),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8),
+                  SizedBox(height: isTablet ? 44 : 36.h),
+                  Text(
+                    'Ready for your next document?',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontFamily: 'Klavika',
+                      fontSize: isTablet ? 22 : 18.sp,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 56.r,
-                        height: 56.r,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFEEF4F8),
-                          borderRadius: BorderRadius.circular(16.r),
-                        ),
-                        child:
-                            const Icon(Icons.add_task, color: Color(0xFF1B3B57)),
-                      ),
-                      SizedBox(width: 16.w),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              "Make a request",
-                              style: TextStyle(
-                                fontSize: 18.sp,
-                                fontWeight: FontWeight.w700,
-                                fontFamily: 'Klavika',
-                              ),
-                            ),
-                            SizedBox(height: 6.h),
-                            Text(
-                              "Submit documents in under 2 minutes.",
-                              style: TextStyle(
-                                fontSize: 12.sp,
-                                color: Colors.black54,
-                                fontFamily: 'Frutiger',
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: 18.h),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: () {
-                        Navigator.push(
+                  SizedBox(height: isTablet ? 22 : 18.h),
+                  Align(
+                    alignment: Alignment.center,
+                    child: Material(
+                      color: const Color(0xFFC8F36B),
+                      borderRadius: BorderRadius.circular(22.r),
+                      child: InkWell(
+                        onTap: () => Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (context) => const DataConsentScreen(),
                           ),
-                        );
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF1B2E3C),
-                        elevation: 0,
-                        padding: EdgeInsets.symmetric(
-                          horizontal: 20.w,
-                          vertical: 14.h,
                         ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14.r),
-                        ),
-                      ),
-                      child: Text(
-                        "Make Request",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 14.sp,
-                          fontWeight: FontWeight.w600,
+                        borderRadius: BorderRadius.circular(22.r),
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isTablet ? 30 : 24.w,
+                            vertical: isTablet ? 13 : 11.h,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.add_rounded,
+                                color: const Color(0xFF2E3B0A),
+                                size: isTablet ? 21 : 18.sp,
+                              ),
+                              SizedBox(width: 4.w),
+                              Text(
+                                'New request',
+                                style: TextStyle(
+                                  color: const Color(0xFF2E3B0A),
+                                  fontFamily: 'Frutiger',
+                                  fontSize: isTablet ? 14 : 11.sp,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ],
               ),
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildStatPill({
+  Widget _buildOverviewIcon(IconData icon, {VoidCallback? onTap}) {
+    final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
+
+    return Material(
+      color: Colors.white.withAlpha(25),
+      shape: const CircleBorder(),
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: Padding(
+          padding: EdgeInsets.all(isTablet ? 8 : 6.r),
+          child: Icon(
+            icon,
+            color: Colors.white,
+            size: isTablet ? 19 : 15.sp,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOverviewMetric({
     required String label,
     required String value,
-    required Color color,
+    required String suffix,
   }) {
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 8.h),
-      decoration: BoxDecoration(
-        color: Colors.white.withAlpha(31),
-        borderRadius: BorderRadius.circular(18.r),
-        border: Border.all(color: Colors.white.withAlpha(51)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 8.r,
-            height: 8.r,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.white70,
+            fontFamily: 'Frutiger',
+            fontSize: isTablet ? 15 : 11.sp,
           ),
-          SizedBox(width: 6.w),
-          Text(
-            "$label: $value",
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 12.sp,
-              fontFamily: 'Frutiger',
-              fontWeight: FontWeight.w600,
+        ),
+        SizedBox(height: isTablet ? 4 : 2.h),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              value,
+              style: TextStyle(
+                color: Colors.white,
+                fontFamily: 'Klavika',
+                fontSize: isTablet ? 34 : 27.sp,
+                height: 1,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-          ),
-        ],
-      ),
+            SizedBox(width: isTablet ? 7 : 5.w),
+            Padding(
+              padding: EdgeInsets.only(bottom: isTablet ? 3 : 2.h),
+              child: Text(
+                suffix,
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontFamily: 'Frutiger',
+                  fontSize: isTablet ? 12 : 9.sp,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
-
 }

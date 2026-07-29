@@ -1,7 +1,7 @@
 import 'package:capstone_project/screens/request_form_screen.dart';
+import 'package:capstone_project/widgets/request_progress_indicator.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
-
 
 class DataConsentScreen extends StatefulWidget {
   const DataConsentScreen({super.key});
@@ -18,22 +18,53 @@ class _DataConsentScreenState extends State<DataConsentScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF5D7E97),
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
         elevation: 0,
         centerTitle: true,
-        leading: IconButton(
-          icon: Icon(Icons.chevron_left, color: Colors.white, size: 30.sp),
-          onPressed: () => Navigator.pop(context),
+        automaticallyImplyLeading: false,
+        title: Image.asset(
+          'assets/logo/logo.png',
+          width: 92.w,
+          height: 30.h,
+          fit: BoxFit.contain,
         ),
-        title: Text(
-          "Data Consent Form",
-          style: TextStyle(color: Colors.white, fontSize: 22.sp, fontWeight: FontWeight.bold),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.of(context).popUntil((route) => route.isFirst),
+            child: Text(
+              'Cancel',
+              style: TextStyle(
+                color: const Color(0xFF356A94),
+                fontSize: 12.sp,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          SizedBox(width: 6.w),
+        ],
+        bottom: PreferredSize(
+          preferredSize: Size.fromHeight(47.h),
+          child: const RequestProgressIndicator(currentStep: 0),
         ),
       ),
       body: SingleChildScrollView(
         padding: EdgeInsets.all(20.w),
         child: Column(
           children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Data consent',
+                style: TextStyle(
+                  color: const Color(0xFF233446),
+                  fontSize: 22.sp,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            SizedBox(height: 18.h),
             // Request Processing Steps Card
             _buildInfoCard(
               title: "Request Processing Steps",
@@ -45,7 +76,7 @@ class _DataConsentScreenState extends State<DataConsentScreen> {
                   _stepText("Step 3: Payment"),
                   _stepText("Step 4: Payment Verification and Confirmation"),
                   _stepText("Step 5: Document Processing"),
-                  _stepText("Step 7: Document Issuance"),
+                  _stepText("Step 6: Document Issuance"),
                 ],
               ),
             ),
@@ -58,7 +89,8 @@ class _DataConsentScreenState extends State<DataConsentScreen> {
                 children: [
                   Text(
                     "By using VerifiTOR and submitting a Transcript of Records (TOR) request, I voluntarily provide my personal information and academic details to the system and authorize the Registrar's Office to collect, process, store, and use such information...",
-                    style: TextStyle(fontSize: 12.sp, color: Colors.black87, height: 1.4),
+                    style: TextStyle(
+                        fontSize: 12.sp, color: Colors.black87, height: 1.4),
                   ),
                   SizedBox(height: 15.h),
                   Row(
@@ -66,7 +98,8 @@ class _DataConsentScreenState extends State<DataConsentScreen> {
                       Checkbox(
                         value: _hasConsented,
                         activeColor: const Color(0xFF5D7E97),
-                        onChanged: (val) => setState(() => _hasConsented = val!),
+                        onChanged: (val) =>
+                            setState(() => _hasConsented = val!),
                       ),
                       Expanded(
                         child: Text(
@@ -85,18 +118,21 @@ class _DataConsentScreenState extends State<DataConsentScreen> {
             Align(
               alignment: Alignment.bottomRight,
               child: ElevatedButton(
-                onPressed: _hasConsented 
-                  ? () => Navigator.push(
-                      context, 
-                      MaterialPageRoute(builder: (context) => const RequestFormScreen())
-                    ) 
-                  : null,
+                onPressed: _hasConsented
+                    ? () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (context) => const RequestFormScreen()))
+                    : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF233446),
-                  padding: EdgeInsets.symmetric(horizontal: 50.w, vertical: 12.h),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8.r)),
+                  padding:
+                      EdgeInsets.symmetric(horizontal: 50.w, vertical: 12.h),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8.r)),
                 ),
-                child: Text("Next", style: TextStyle(color: Colors.white, fontSize: 18.sp)),
+                child: Text("Next",
+                    style: TextStyle(color: Colors.white, fontSize: 18.sp)),
               ),
             ),
           ],
@@ -119,7 +155,8 @@ class _DataConsentScreenState extends State<DataConsentScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: TextStyle(fontSize: 18.sp, fontWeight: FontWeight.bold)),
+          Text(title,
+              style: TextStyle(fontSize: 18.sp, fontWeight: FontWeight.bold)),
           SizedBox(height: 15.h),
           content,
         ],
@@ -130,7 +167,8 @@ class _DataConsentScreenState extends State<DataConsentScreen> {
   Widget _stepText(String text) {
     return Padding(
       padding: EdgeInsets.only(bottom: 8.h),
-      child: Text(text, style: TextStyle(fontSize: 13.sp, color: Colors.black87)),
+      child:
+          Text(text, style: TextStyle(fontSize: 13.sp, color: Colors.black87)),
     );
   }
 }

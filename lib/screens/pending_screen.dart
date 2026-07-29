@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:intl/intl.dart';
-import '../widgets/custom_font.dart';
-import '../screens/request_detail_screen.dart';
 
+import '../screens/request_detail_screen.dart';
+import '../widgets/custom_font.dart';
 
 class PendingRequest {
   final String docName;
- final String purpose;
+  final String purpose;
   final DateTime dateCreated;
-  final String status; // e.g., "PENDING", "APPROVED", "RELEASED"
+  final String status;
   final double documentPrice;
   final double totalAmount;
 
@@ -23,7 +22,6 @@ class PendingRequest {
   }) : totalAmount = totalAmount ?? documentPrice;
 }
 
-
 class PendingScreen extends StatefulWidget {
   final List<PendingRequest> requestList;
 
@@ -34,142 +32,286 @@ class PendingScreen extends StatefulWidget {
 }
 
 class _PendingScreenState extends State<PendingScreen> {
-  String _selectedFilter = "All";
+  static const double _maxContentWidth = 760;
+  String _selectedFilter = 'All';
+
   @override
   Widget build(BuildContext context) {
-    // 1. Logic to get unique doc names from the list for the filter
-    List<String> filters = ["All"];
-    filters.addAll(widget.requestList.map((e) => e.docName).toSet().toList());
-
-    // 2. Filter the list based on selection
-    List<PendingRequest> filteredList = _selectedFilter == "All"
+    final filters = <String>[
+      'All',
+      ...widget.requestList.map((request) => request.docName).toSet(),
+    ];
+    final filteredList = _selectedFilter == 'All'
         ? widget.requestList
-        : widget.requestList.where((r) => r.docName == _selectedFilter).toList();
+        : widget.requestList
+            .where((request) => request.docName == _selectedFilter)
+            .toList();
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8F9FA),
-      body: Column(
-        children: [
-          Container(height: 70.h, width: double.infinity, color: const Color(0xFF5D7E97)),
-          Expanded(
-            child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(height: 20.h),
-                  Text("Pending", style: TextStyle(fontSize: 32.sp, fontWeight: FontWeight.bold)),
-                  
-                  // Filter Dropdown
-                  Container(
-                    margin: EdgeInsets.symmetric(vertical: 10.h),
-                    padding: EdgeInsets.symmetric(horizontal: 12.w),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(8.r),
-                      border: Border.all(color: Colors.grey.shade300),
-                    ),
-                    child: DropdownButton<String>(
-                      value: _selectedFilter,
-                      isExpanded: true,
-                      underline: const SizedBox(),
-                      items: filters.map((String value) {
-                        return DropdownMenuItem<String>(value: value, child: Text(value));
-                      }).toList(),
-                      onChanged: (newValue) {
-                        setState(() => _selectedFilter = newValue!);
-                      },
-                    ),
-                  ),
+    return LayoutBuilder(
+      builder: (context, viewport) {
+        final isTablet = viewport.maxWidth >= 600;
+        final horizontalPadding = isTablet ? 32.0 : 14.0;
 
-                  Expanded(
-                    child: filteredList.isNotEmpty
-                        ? ListView.builder(
-                            itemCount: filteredList.length,
-                            itemBuilder: (context, index) {
-                              final item = filteredList[index];
-                              return InkWell(
-                                onTap: () => Navigator.push(
-                                  context,
-                                  MaterialPageRoute(builder: (context) => RequestDetailsScreen(request: item)),
-                                ),
-                                child: _buildCard(item),
-                              );
-                            },
-                          )
-                        : _buildEmptyState(),
-                  ),
-                ],
+        return Scaffold(
+          backgroundColor: const Color(0xFFF8F9FA),
+          body: Column(
+            children: [
+              Container(
+                height: isTablet ? 72 : 64,
+                width: double.infinity,
+                color: const Color(0xFF5D7E97),
               ),
-            ),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints:
+                        const BoxConstraints(maxWidth: _maxContentWidth),
+                    child: Padding(
+                      padding:
+                          EdgeInsets.symmetric(horizontal: horizontalPadding),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(height: isTablet ? 26 : 18),
+                          Text(
+                            'Pending',
+                            style: TextStyle(
+                              color: const Color(0xFF1F252A),
+                              fontSize: isTablet ? 36 : 30,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          SizedBox(height: isTablet ? 18 : 12),
+                          DropdownButtonFormField<String>(
+                            initialValue: _selectedFilter,
+                            isExpanded: true,
+                            icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                            decoration: InputDecoration(
+                              filled: true,
+                              fillColor: Colors.white,
+                              contentPadding: EdgeInsets.symmetric(
+                                horizontal: isTablet ? 20 : 15,
+                                vertical: isTablet ? 17 : 13,
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(
+                                  color: Color(0xFFE0E4E7),
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(
+                                  color: Color(0xFF5A819B),
+                                  width: 1.5,
+                                ),
+                              ),
+                            ),
+                            items: filters
+                                .map(
+                                  (value) => DropdownMenuItem<String>(
+                                    value: value,
+                                    child: Text(
+                                      value,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: isTablet ? 17 : 15,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: (value) {
+                              if (value == null) return;
+                              setState(() => _selectedFilter = value);
+                            },
+                          ),
+                          SizedBox(height: isTablet ? 20 : 14),
+                          Expanded(
+                            child: filteredList.isEmpty
+                                ? _buildEmptyState(isTablet)
+                                : ListView.separated(
+                                    padding: EdgeInsets.only(
+                                      bottom: isTablet ? 32 : 22,
+                                    ),
+                                    itemCount: filteredList.length,
+                                    separatorBuilder: (_, __) => SizedBox(
+                                      height: isTablet ? 16 : 12,
+                                    ),
+                                    itemBuilder: (context, index) {
+                                      final item = filteredList[index];
+                                      return _buildCard(
+                                        item,
+                                        isTablet: isTablet,
+                                        onTap: () => Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) =>
+                                                RequestDetailsScreen(
+                                              request: item,
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
+  Widget _buildCard(
+    PendingRequest item, {
+    required bool isTablet,
+    required VoidCallback onTap,
+  }) {
+    final statusColor = _getStatusColor(item.status);
+    final information = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          item.docName,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: const Color(0xFF252A2E),
+            fontSize: isTablet ? 19 : 16,
+            height: 1.2,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        SizedBox(height: isTablet ? 10 : 8),
+        Text(
+          DateFormat('MMM d, y  h:mm a').format(item.dateCreated),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: const Color(0xFF9AA2A8),
+            fontSize: isTablet ? 15 : 12,
+          ),
+        ),
+      ],
+    );
 
-
-
- Widget _buildCard(PendingRequest item) {
-    return Container(
-      margin: EdgeInsets.only(bottom: 15.h),
-      padding: EdgeInsets.all(15.r),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12.r),
-        boxShadow: [BoxShadow(color: Colors.black.withAlpha(13), blurRadius: 5)],
+    final statusBadge = ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: isTablet ? 210 : 150),
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: isTablet ? 14 : 10,
+          vertical: isTablet ? 8 : 6,
+        ),
+        decoration: BoxDecoration(
+          color: statusColor.withAlpha(40),
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: Text(
+          item.status,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: statusColor,
+            fontSize: isTablet ? 12 : 10,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(item.docName, style: TextStyle(fontSize: 16.sp, fontWeight: FontWeight.bold)),
+    );
 
-              SizedBox(height: 10.h),
-
-              Text(DateFormat('MMM d, y  h:mm a').format(item.dateCreated), 
-                  style: TextStyle(fontSize: 12.sp, color: Colors.grey)),
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(isTablet ? 16 : 13),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          width: double.infinity,
+          padding: EdgeInsets.symmetric(
+            horizontal: isTablet ? 24 : 16,
+            vertical: isTablet ? 22 : 17,
+          ),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(isTablet ? 16 : 13),
+            border: Border.all(color: const Color(0xFFEDF0F2)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withAlpha(10),
+                blurRadius: 12,
+                offset: const Offset(0, 5),
+              ),
             ],
           ),
+          child: LayoutBuilder(
+            builder: (context, card) {
+              if (card.maxWidth < 340) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    information,
+                    const SizedBox(height: 13),
+                    statusBadge,
+                  ],
+                );
+              }
 
-          Container(
-            padding: EdgeInsets.symmetric(horizontal: 10.w, vertical: 4.h),
-            decoration: BoxDecoration(
-              color: _getStatusColor(item.status).withAlpha(51),
-              borderRadius: BorderRadius.circular(20.r),
-            ),
-            child: Text(item.status, 
-                style: TextStyle(color: _getStatusColor(item.status), fontSize: 10.sp, fontWeight: FontWeight.bold)),
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(child: information),
+                  SizedBox(width: isTablet ? 24 : 12),
+                  Flexible(child: statusBadge),
+                ],
+              );
+            },
           ),
-        ],
+        ),
       ),
     );
   }
 
   Color _getStatusColor(String status) {
     switch (status.toUpperCase()) {
-      case "PENDING FOR PAYMENT": return Colors.orange;
-      case "PENDING TO COMPLETE": return Colors.blueGrey;
-      case "RELEASED": return Colors.orange;
-      case "PROCESSING": return Colors.green;
-      case "APPROVED": return Colors.blue;
-      default: return Colors.yellow.shade700;
+      case 'PENDING FOR PAYMENT':
+        return const Color(0xFFE99A18);
+      case 'PENDING TO COMPLETE':
+        return Colors.blueGrey;
+      case 'RELEASED':
+        return Colors.orange;
+      case 'PROCESSING':
+        return Colors.green;
+      case 'APPROVED':
+        return Colors.blue;
+      default:
+        return Colors.yellow.shade700;
     }
   }
 
-  Widget _buildEmptyState() {
+  Widget _buildEmptyState(bool isTablet) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.history_edu, size: 80.r, color: Colors.grey.shade300),
-          SizedBox(height: 16.h),
+          Icon(
+            Icons.history_edu,
+            size: isTablet ? 92 : 72,
+            color: Colors.grey.shade300,
+          ),
+          SizedBox(height: isTablet ? 20 : 14),
           CustomFont(
-            text: "No pending requests found.",
-            fontSize: 16.sp,
+            text: 'No pending requests found.',
+            fontSize: isTablet ? 18 : 15,
             color: Colors.grey.shade500,
           ),
         ],
@@ -177,4 +319,3 @@ class _PendingScreenState extends State<PendingScreen> {
     );
   }
 }
- 

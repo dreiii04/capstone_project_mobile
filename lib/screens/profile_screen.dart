@@ -1,6 +1,7 @@
 import 'package:capstone_project/models/profile_data.dart';
 import 'package:capstone_project/screens/edit_profile_screen.dart';
 import 'package:capstone_project/services/mongo_data_api_service.dart';
+import 'package:capstone_project/widgets/simple_message_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 
@@ -36,9 +37,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
       });
     } catch (error) {
       if (!mounted) return;
+      await showSimpleMessageDialog(
+        context,
+        error.toString().replaceFirst('Exception: ', ''),
+        title: 'Profile failed',
+      );
       setState(() {
-        _errorMessage =
-            error.toString().replaceFirst('Exception: ', '');
+        _errorMessage = 'Unable to load profile.';
       });
     } finally {
       if (mounted) {
@@ -110,7 +115,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     }
 
-    final isAlumni = profile.isAlumni;
+    final isPastStudent = profile.isPastStudent;
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -130,19 +135,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Text(
                     "Profile",
                     style: TextStyle(
-                      color: Colors.white, 
-                      fontSize: 32.sp, 
-                      fontWeight: FontWeight.bold
-                    ),
+                        color: Colors.white,
+                        fontSize: 32.sp,
+                        fontWeight: FontWeight.bold),
                   ),
                 ),
                 Positioned(
                   bottom: -50.h,
                   child: Container(
                     decoration: const BoxDecoration(
-                      color: Colors.white, 
-                      shape: BoxShape.circle
-                    ),
+                        color: Colors.white, shape: BoxShape.circle),
                     padding: EdgeInsets.all(5.r),
                     child: CircleAvatar(
                       radius: 55.r,
@@ -176,15 +178,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 children: [
                   Text(
                     "Basic Information",
-                    style: TextStyle(
-                      fontSize: 18.sp, 
-                      fontWeight: FontWeight.bold
-                    ),
+                    style:
+                        TextStyle(fontSize: 18.sp, fontWeight: FontWeight.bold),
                   ),
                   SizedBox(height: 20.h),
                   _buildInfoRow("Name:", profile.fullName),
-                  if (isAlumni) ...[
-                    _buildInfoRow("Year Graduated:", profile.yearLevel),
+                  if (isPastStudent) ...[
+                    _buildInfoRow(
+                      "Year graduated / last attended:",
+                      profile.yearLevel,
+                    ),
                     _buildInfoRow("Program:", profile.program),
                   ] else ...[
                     _buildInfoRow("Student ID:", profile.studentId),
@@ -219,8 +222,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 backgroundColor: darkNavy,
                 fixedSize: Size(180.w, 45.h),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20.r)
-                ),
+                    borderRadius: BorderRadius.circular(20.r)),
               ),
               child: Text(
                 "Edit profile",
@@ -236,14 +238,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 await MongoDataApiService.instance.logout();
                 if (!context.mounted) return;
                 Navigator.of(context)
-                    .pushNamedAndRemoveUntil('/choose', (route) => false);
+                    .pushNamedAndRemoveUntil('/login', (route) => false);
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: darkNavy,
                 fixedSize: Size(180.w, 45.h),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20.r)
-                ),
+                    borderRadius: BorderRadius.circular(20.r)),
               ),
               child: Text(
                 "Log out",
@@ -274,10 +275,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
             child: Text(
               value,
               style: TextStyle(
-                fontSize: 13.sp, 
-                color: Colors.black, 
-                fontWeight: FontWeight.w500
-              ),
+                  fontSize: 13.sp,
+                  color: Colors.black,
+                  fontWeight: FontWeight.w500),
             ),
           ),
         ],

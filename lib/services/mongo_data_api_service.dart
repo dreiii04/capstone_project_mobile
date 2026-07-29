@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:capstone_project/constants.dart';
@@ -70,13 +72,18 @@ class MongoDataApiService {
       headers.addAll(authHeaders());
     }
 
-    final response = await http
-        .post(
-          _uri(path),
-          headers: headers,
-          body: jsonEncode(body),
-        )
-        .timeout(_timeout);
+    late final http.Response response;
+    try {
+      response = await http
+          .post(
+            _uri(path),
+            headers: headers,
+            body: jsonEncode(body),
+          )
+          .timeout(_timeout);
+    } catch (error) {
+      throw Exception(_friendlyNetworkMessage(error));
+    }
 
     if (withAuth && response.statusCode == 401 && !retrying) {
       await _refreshOrThrow();
@@ -97,8 +104,12 @@ class MongoDataApiService {
       headers.addAll(authHeaders());
     }
 
-    final response =
-        await http.get(_uri(path), headers: headers).timeout(_timeout);
+    late final http.Response response;
+    try {
+      response = await http.get(_uri(path), headers: headers).timeout(_timeout);
+    } catch (error) {
+      throw Exception(_friendlyNetworkMessage(error));
+    }
     if (withAuth && response.statusCode == 401 && !retrying) {
       await _refreshOrThrow();
       return _getJson(path, withAuth: true, retrying: true);
@@ -121,13 +132,18 @@ class MongoDataApiService {
       headers.addAll(authHeaders());
     }
 
-    final response = await http
-        .put(
-          _uri(path),
-          headers: headers,
-          body: jsonEncode(body),
-        )
-        .timeout(_timeout);
+    late final http.Response response;
+    try {
+      response = await http
+          .put(
+            _uri(path),
+            headers: headers,
+            body: jsonEncode(body),
+          )
+          .timeout(_timeout);
+    } catch (error) {
+      throw Exception(_friendlyNetworkMessage(error));
+    }
     if (withAuth && response.statusCode == 401 && !retrying) {
       await _refreshOrThrow();
       return _putJson(path, body, withAuth: true, retrying: true);
@@ -137,7 +153,12 @@ class MongoDataApiService {
   }
 
   Future<_ApiResponse> _sendMultipart(http.MultipartRequest request) async {
-    final streamed = await request.send().timeout(_timeout);
+    late final http.StreamedResponse streamed;
+    try {
+      streamed = await request.send().timeout(_timeout);
+    } catch (error) {
+      throw Exception(_friendlyNetworkMessage(error));
+    }
     final response = await http.Response.fromStream(streamed);
     return _decodeResponse(response);
   }
@@ -163,6 +184,16 @@ class MongoDataApiService {
       return message;
     }
     return fallback;
+  }
+
+  String _friendlyNetworkMessage(Object error) {
+    if (error is SocketException) {
+      return 'No internet connection. Please check your network and try again.';
+    }
+    if (error is TimeoutException) {
+      return 'The request timed out. Please try again.';
+    }
+    return 'Something went wrong. Please try again.';
   }
 
   void _clearSession() {
@@ -229,8 +260,8 @@ class MongoDataApiService {
     }
 
     if (_accessTokenExpiresAt != null) {
-      final refreshAt = _accessTokenExpiresAt!
-          .subtract(const Duration(seconds: 30));
+      final refreshAt =
+          _accessTokenExpiresAt!.subtract(const Duration(seconds: 30));
       if (DateTime.now().isAfter(refreshAt)) {
         await _refreshOrThrow();
       }
@@ -238,6 +269,7 @@ class MongoDataApiService {
   }
 
   Future<void> createUser({
+    required String role,
     required String firstName,
     required String lastName,
     required String email,
@@ -248,6 +280,7 @@ class MongoDataApiService {
     String? program,
   }) async {
     final response = await _postJson('/auth/register', {
+      'role': role.trim(),
       'firstName': firstName.trim(),
       'lastName': lastName.trim(),
       'email': email.trim(),
@@ -266,20 +299,24 @@ class MongoDataApiService {
   }
 
   Future<String?> requestRegisterOtp({
+    required String role,
     required String firstName,
     required String lastName,
     required String email,
     required String password,
     required String yearLevel,
     required String program,
+    String? schoolEmail,
+    String? studentId,
   }) async {
     final response = await _postJson('/auth/register/request-otp', {
+      'role': role.trim(),
       'firstName': firstName.trim(),
       'lastName': lastName.trim(),
       'email': email.trim(),
       'password': password.trim(),
-      'schoolEmail': '',
-      'studentId': '',
+      'schoolEmail': (schoolEmail ?? '').trim(),
+      'studentId': (studentId ?? '').trim(),
       'yearLevel': yearLevel.trim(),
       'program': program.trim(),
     });
@@ -436,8 +473,7 @@ class MongoDataApiService {
     await _ensureValidSession();
 
     Future<_ApiResponse> sendRequest() async {
-      final request =
-          http.MultipartRequest('POST', _uri('/payments/receipt'));
+      final request = http.MultipartRequest('POST', _uri('/payments/receipt'));
       request.headers.addAll(authHeaders());
       request.fields['paymentType'] = paymentType;
       request.fields['docName'] = docName;
@@ -592,7 +628,8 @@ class MongoDataApiService {
     throw Exception(_messageFor(response.data, 'Failed to load receipt.'));
   }
 
-  Future<List<Map<String, dynamic>>> fetchNotifications({int limit = 50}) async {
+  Future<List<Map<String, dynamic>>> fetchNotifications(
+      {int limit = 50}) async {
     if (_accessToken == null) {
       throw Exception('Not authenticated.');
     }
@@ -613,7 +650,8 @@ class MongoDataApiService {
       return [];
     }
 
-    throw Exception(_messageFor(response.data, 'Failed to load notifications.'));
+    throw Exception(
+        _messageFor(response.data, 'Failed to load notifications.'));
   }
 
   Future<List<Map<String, dynamic>>> fetchTransactions({int limit = 50}) async {
@@ -638,6 +676,36 @@ class MongoDataApiService {
     }
 
     throw Exception(_messageFor(response.data, 'Failed to load transactions.'));
+  }
+
+  Future<Map<String, dynamic>> requestRefund({
+    required String transactionId,
+    required String refundMethod,
+    required String accountName,
+    required String accountNumber,
+    String? bankName,
+    String? reason,
+  }) async {
+    final response = await _postJson(
+      '/refunds',
+      {
+        'transactionId': transactionId.trim(),
+        'refundMethod': refundMethod.trim(),
+        'accountName': accountName.trim(),
+        'accountNumber': accountNumber.trim(),
+        if (bankName != null) 'bankName': bankName.trim(),
+        if (reason != null) 'reason': reason.trim(),
+      },
+      withAuth: true,
+    );
+
+    if (response.statusCode == 201 && response.data['success'] == true) {
+      return response.data;
+    }
+
+    throw Exception(
+      _messageFor(response.data, 'Failed to submit refund request.'),
+    );
   }
 
   Future<String?> requestPasswordResetOtp({required String email}) async {
@@ -681,7 +749,7 @@ class MongoDataApiService {
   }) async {
     final response = await _postJson('/auth/forgot-password/reset', {
       'resetToken': resetToken.trim(),
-      'newPassword': newPassword.trim(),
+      'newPassword': newPassword,
     });
 
     if (response.statusCode == 200 && response.data['success'] == true) {

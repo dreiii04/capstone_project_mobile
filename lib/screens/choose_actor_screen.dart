@@ -77,7 +77,7 @@ class ChooseActorScreen extends StatelessWidget {
                       Navigator.pushReplacement(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => const LogInScreen(isStudent: true),
+                          builder: (context) => const LogInScreen(),
                         ),
                       );
                     },

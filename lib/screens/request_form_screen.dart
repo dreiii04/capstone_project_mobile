@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import '../widgets/custom_font.dart';
 import '../services/mongo_data_api_service.dart';
+import '../widgets/simple_message_dialog.dart';
+import '../widgets/request_progress_indicator.dart';
 
 class RequestFormScreen extends StatefulWidget {
   const RequestFormScreen({super.key});
@@ -20,7 +22,8 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
   bool _isConfirmed = false;
   bool _isSubmitting = false;
 
-  final TextEditingController _otherDocumentController = TextEditingController();
+  final TextEditingController _otherDocumentController =
+      TextEditingController();
   final TextEditingController _otherPurposeController = TextEditingController();
 
   // --- Document Price Data ---
@@ -115,12 +118,12 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
 
     // Prepare data for the Pending Screen
     String finalDocName = (_mainDocType == 'Others')
-      ? _otherDocumentController.text.trim()
-      : _mainDocType!;
+        ? _otherDocumentController.text.trim()
+        : _mainDocType!;
 
     String finalPurpose = (_selectedPurpose == 'Others')
-      ? _otherPurposeController.text.trim()
-      : _selectedPurpose!;
+        ? _otherPurposeController.text.trim()
+        : _selectedPurpose!;
 
     setState(() {
       _isSubmitting = true;
@@ -134,13 +137,10 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            "Request failed: ${e.toString().replaceFirst('Exception: ', '')}",
-          ),
-          backgroundColor: Colors.red,
-        ),
+      await showSimpleMessageDialog(
+        context,
+        e.toString().replaceFirst('Exception: ', ''),
+        title: 'Request failed',
       );
       setState(() {
         _isSubmitting = false;
@@ -157,14 +157,12 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
     // Adjust 'HomeScreen' to match your actual Main/Home class name
     final requestData = response['request'];
     final requestMap = requestData is Map
-      ? Map<String, dynamic>.from(requestData)
-      : <String, dynamic>{};
+        ? Map<String, dynamic>.from(requestData)
+        : <String, dynamic>{};
     final statusRaw = requestMap['status']?.toString() ?? '';
     final documentPrice = _parseAmount(requestMap['documentPrice']);
     final totalAmount = _parseAmount(requestMap['totalAmount']);
-    final resolvedTotal = totalAmount > 0
-      ? totalAmount
-      : documentPrice;
+    final resolvedTotal = totalAmount > 0 ? totalAmount : documentPrice;
     final displayStatus = statusRaw.trim().toLowerCase() == 'pending_completion'
         ? 'PENDING TO COMPLETE'
         : 'PENDING FOR PAYMENT';
@@ -200,18 +198,42 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5), // Light grey background
       appBar: AppBar(
-        backgroundColor: const Color(0xFF5D7E97),
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
         elevation: 0,
         centerTitle: true,
-        leading: IconButton(
-          icon: Icon(Icons.chevron_left, color: Colors.white, size: 30.sp),
-          onPressed: () => Navigator.pop(context),
+        automaticallyImplyLeading: false,
+        title: Image.asset(
+          'assets/logo/logo.png',
+          width: 92.w,
+          height: 30.h,
+          fit: BoxFit.contain,
         ),
-        title: Text("Request Form",
-            style: TextStyle(
-                color: Colors.white,
-                fontSize: 22.sp,
-                fontWeight: FontWeight.bold)),
+        actions: [
+          TextButton(
+            onPressed: _isSubmitting
+                ? null
+                : () =>
+                    Navigator.of(context).popUntil((route) => route.isFirst),
+            child: Text(
+              'Cancel',
+              style: TextStyle(
+                color: _isSubmitting
+                    ? const Color(0xFFAAB3B9)
+                    : const Color(0xFF356A94),
+                fontSize: 12.sp,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          SizedBox(width: 6.w),
+        ],
+        bottom: PreferredSize(
+          preferredSize: Size.fromHeight(47.h),
+          child: RequestProgressIndicator(
+            currentStep: _isSubmitting ? 2 : 1,
+          ),
+        ),
       ),
       body: SingleChildScrollView(
         padding: EdgeInsets.all(25.w),
@@ -222,7 +244,8 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text("Document Request",
-                  style: TextStyle(fontSize: 18.sp, fontWeight: FontWeight.bold)),
+                  style:
+                      TextStyle(fontSize: 18.sp, fontWeight: FontWeight.bold)),
               SizedBox(height: 20.h),
 
               // Document Price List
@@ -240,9 +263,8 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
               _buildDropdown(
                 hint: "Choose Document",
                 value: _mainDocType,
-                items: allDocuments
-                    .map((doc) => doc['name'].toString())
-                    .toList(),
+                items:
+                    allDocuments.map((doc) => doc['name'].toString()).toList(),
                 onChanged: (val) => setState(() => _mainDocType = val),
                 validator: (val) {
                   if (val == null || val.trim().isEmpty) {
