@@ -66,7 +66,7 @@ class _PaymentRefundScreenState extends State<PaymentRefundScreen> {
 
     setState(() => _isSubmitting = true);
     try {
-      await MongoDataApiService.instance.requestRefund(
+      final result = await MongoDataApiService.instance.requestRefund(
         transactionId: widget.item.transactionId,
         refundMethod: _refundMethod,
         accountName: _accountNameController.text,
@@ -76,7 +76,10 @@ class _PaymentRefundScreenState extends State<PaymentRefundScreen> {
         reason: _reasonController.text,
       );
       if (!mounted) return;
-      widget.item.refundStatus = 'pending';
+      widget.item.refundStatus =
+          result['refundStatus']?.toString().trim().isNotEmpty == true
+              ? result['refundStatus'].toString().trim()
+              : 'pending';
       setState(() {
         _submitted = true;
         _isSubmitting = false;
@@ -143,6 +146,8 @@ class _PaymentRefundScreenState extends State<PaymentRefundScreen> {
           const SizedBox(height: 16),
           _buildSummaryCard(),
           const SizedBox(height: 16),
+          _buildRefundProcessCard(),
+          const SizedBox(height: 16),
           _buildDetailsCard(),
           const SizedBox(height: 16),
           _buildConfirmation(),
@@ -201,13 +206,45 @@ class _PaymentRefundScreenState extends State<PaymentRefundScreen> {
           SizedBox(width: 12),
           Expanded(
             child: Text(
-              'This paid request was rejected. Enter where you want the refund sent, then the office will review your request.',
+              'This paid request was rejected. To return your payment, submit the receiving account below. The office will verify the payment and refund details before sending it back.',
               style: TextStyle(
                 color: Color(0xFF7A271A),
                 fontSize: 14,
                 height: 1.4,
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRefundProcessCard() {
+    return _card(
+      title: 'How the refund works',
+      icon: Icons.route_outlined,
+      child: const Column(
+        children: [
+          _RefundStep(
+            number: '1',
+            title: 'Provide a receiving account',
+            description:
+                'Choose GCash or bank transfer and check the account details carefully.',
+          ),
+          SizedBox(height: 16),
+          _RefundStep(
+            number: '2',
+            title: 'Wait for office verification',
+            description:
+                'The Registrar will confirm the rejected request, payment, and refund destination.',
+          ),
+          SizedBox(height: 16),
+          _RefundStep(
+            number: '3',
+            title: 'Follow the status in History',
+            description:
+                'You will receive a notification when the refund status changes or more information is needed.',
+            isLast: true,
           ),
         ],
       ),
@@ -407,7 +444,7 @@ class _PaymentRefundScreenState extends State<PaymentRefundScreen> {
           ),
           const SizedBox(height: 10),
           Text(
-            'Your $_formattedAmount refund for ${widget.item.title} is now under review. You will receive a notification when its status changes.',
+            'Your $_formattedAmount refund for ${widget.item.title} is now under review. Track it in History; you will also receive a notification when its status changes.',
             textAlign: TextAlign.center,
             style: const TextStyle(
               color: Color(0xFF687680),
@@ -537,6 +574,73 @@ class _PaymentRefundScreenState extends State<PaymentRefundScreen> {
         borderSide: const BorderSide(color: _primaryBlue, width: 2),
       ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+    );
+  }
+}
+
+class _RefundStep extends StatelessWidget {
+  const _RefundStep({
+    required this.number,
+    required this.title,
+    required this.description,
+    this.isLast = false,
+  });
+
+  final String number;
+  final String title;
+  final String description;
+  final bool isLast;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 30,
+          height: 30,
+          alignment: Alignment.center,
+          decoration: const BoxDecoration(
+            color: Color(0xFFEAF1F5),
+            shape: BoxShape.circle,
+          ),
+          child: Text(
+            number,
+            style: const TextStyle(
+              color: _PaymentRefundScreenState._primaryBlue,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Padding(
+            padding: EdgeInsets.only(bottom: isLast ? 0 : 2),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: _PaymentRefundScreenState._darkNavy,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  description,
+                  style: const TextStyle(
+                    color: Color(0xFF687680),
+                    fontSize: 13,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

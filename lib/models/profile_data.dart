@@ -21,22 +21,84 @@ class ProfileData {
   final String role;
   final String profileImageUrl;
 
+  String get normalizedRole =>
+      role.trim().toLowerCase().replaceAll(RegExp(r"[\s-]+"), '_');
+
+  bool get isCurrentStudent {
+    return const {'student', 'current_student'}.contains(normalizedRole);
+  }
+
+  bool get isFormerStudent {
+    return const {
+      'former_student',
+      'stopped_student',
+      'student_stopped',
+      'stopped',
+    }.contains(normalizedRole);
+  }
+
+  bool get isAlumni => normalizedRole == 'alumni';
+
+  bool get isMasters {
+    return const {
+      'masters',
+      'master',
+      "master's",
+      'masters_student',
+      'graduate_student',
+    }.contains(normalizedRole);
+  }
+
+  bool get isDoctorate {
+    return const {
+      'doctorate',
+      'doctoral',
+      'doctorate_student',
+      'doctoral_student',
+      'phd',
+    }.contains(normalizedRole);
+  }
+
   bool get isPastStudent {
-    final normalized = role.trim().toLowerCase();
-    return normalized == 'alumni' || normalized == 'former_student';
+    return isFormerStudent || isAlumni || isMasters || isDoctorate;
+  }
+
+  bool get usesSchoolLogin => isCurrentStudent;
+
+  String get academicYearLabel {
+    if (isCurrentStudent) return 'Year level';
+    if (isFormerStudent) return 'Year last attended';
+    if (isAlumni) return 'Year graduated';
+    if (isMasters || isDoctorate) {
+      return 'Year graduated / last attended';
+    }
+    return 'Academic year';
+  }
+
+  String get academicYearHint {
+    return isCurrentStudent ? 'e.g. 4th Year' : 'e.g. 2025';
+  }
+
+  String get programLabel {
+    if (isFormerStudent) return 'Program attended';
+    if (isMasters) return "Master's program";
+    if (isDoctorate) return 'Doctorate program';
+    return 'Program';
+  }
+
+  String get programHint {
+    if (isMasters) return 'e.g. Master of Information Technology';
+    if (isDoctorate) return 'e.g. Doctor of Information Technology';
+    return 'e.g. BS Information Technology';
   }
 
   String get roleLabel {
-    switch (role.trim().toLowerCase()) {
-      case 'former_student':
-        return 'Former student';
-      case 'alumni':
-        return 'Alumni';
-      case 'student':
-        return 'Current student';
-      default:
-        return role.trim();
-    }
+    if (isCurrentStudent) return 'Current student';
+    if (isFormerStudent) return 'Former / stopped student';
+    if (isAlumni) return 'Alumni';
+    if (isMasters) return "Master's";
+    if (isDoctorate) return 'Doctorate';
+    return role.trim().isEmpty ? 'Requester' : role.trim();
   }
 
   String get fullName {
@@ -75,11 +137,11 @@ class ProfileData {
     final data = {
       'firstName': firstName.trim(),
       'lastName': lastName.trim(),
-      'studentId': studentId.trim(),
+      'studentId': isCurrentStudent ? studentId.trim() : '',
       'yearLevel': yearLevel.trim(),
       'program': program.trim(),
-      'schoolEmail': schoolEmail.trim(),
-      'personalEmail': personalEmail.trim(),
+      'schoolEmail': usesSchoolLogin ? schoolEmail.trim() : '',
+      'personalEmail': usesSchoolLogin ? '' : personalEmail.trim(),
     };
     if (profileImageUrl.trim().isNotEmpty) {
       data['profileImageUrl'] = profileImageUrl.trim();

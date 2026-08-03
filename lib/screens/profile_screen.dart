@@ -1,12 +1,18 @@
 import 'package:capstone_project/models/profile_data.dart';
 import 'package:capstone_project/screens/edit_profile_screen.dart';
 import 'package:capstone_project/services/mongo_data_api_service.dart';
+import 'package:capstone_project/widgets/profile_avatar.dart';
 import 'package:capstone_project/widgets/simple_message_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({super.key});
+  const ProfileScreen({super.key, this.onBack, this.onProfileChanged});
+
+  /// Used when this screen is hosted inside a tab/page shell. When omitted,
+  /// the back button falls back to the current Navigator.
+  final VoidCallback? onBack;
+  final ValueChanged<ProfileData>? onProfileChanged;
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -35,6 +41,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       setState(() {
         _profile = profile;
       });
+      widget.onProfileChanged?.call(profile);
     } catch (error) {
       if (!mounted) return;
       await showSimpleMessageDialog(
@@ -54,6 +61,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  void _handleBack() {
+    final onBack = widget.onBack;
+    if (onBack != null) {
+      onBack();
+      return;
+    }
+    Navigator.maybePop(context);
+  }
+
+  PreferredSizeWidget _buildStateAppBar() {
+    return AppBar(
+      backgroundColor: const Color(0xFF5D7E97),
+      foregroundColor: Colors.white,
+      elevation: 0,
+      leading: IconButton(
+        key: const Key('profile_back_button'),
+        tooltip: 'Back to home',
+        onPressed: _handleBack,
+        icon: const Icon(Icons.arrow_back_rounded),
+      ),
+      title: const Text(
+        'Profile',
+        style: TextStyle(fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // Colors based on your theme
@@ -61,15 +95,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
     const Color darkNavy = Color(0xFF233446);
 
     if (_isLoading) {
-      return const Scaffold(
+      return Scaffold(
         backgroundColor: Colors.white,
-        body: Center(child: CircularProgressIndicator()),
+        appBar: _buildStateAppBar(),
+        body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     if (_errorMessage != null) {
       return Scaffold(
         backgroundColor: Colors.white,
+        appBar: _buildStateAppBar(),
         body: Center(
           child: Padding(
             padding: EdgeInsets.symmetric(horizontal: 24.w),
@@ -106,6 +142,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (profile == null) {
       return Scaffold(
         backgroundColor: Colors.white,
+        appBar: _buildStateAppBar(),
         body: Center(
           child: Text(
             'No profile data found.',
@@ -114,8 +151,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ),
       );
     }
-
-    final isPastStudent = profile.isPastStudent;
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -131,13 +166,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   height: 160.h,
                   width: double.infinity,
                   color: headerBlue,
-                  padding: EdgeInsets.only(left: 20.w, top: 50.h),
-                  child: Text(
-                    "Profile",
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 32.sp,
-                        fontWeight: FontWeight.bold),
+                  child: SafeArea(
+                    bottom: false,
+                    child: Padding(
+                      padding:
+                          EdgeInsets.only(left: 8.w, right: 20.w, top: 4.h),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          IconButton(
+                            key: const Key('profile_back_button'),
+                            tooltip: 'Back to home',
+                            onPressed: _handleBack,
+                            icon: const Icon(Icons.arrow_back_rounded),
+                            color: Colors.white,
+                          ),
+                          SizedBox(width: 4.w),
+                          Padding(
+                            padding: EdgeInsets.only(top: 5.h),
+                            child: Text(
+                              'Profile',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 30.sp,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
                 Positioned(
@@ -146,15 +204,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     decoration: const BoxDecoration(
                         color: Colors.white, shape: BoxShape.circle),
                     padding: EdgeInsets.all(5.r),
-                    child: CircleAvatar(
-                      radius: 55.r,
+                    child: ProfileAvatar(
+                      key: const Key('profile_screen_avatar'),
+                      size: 110.r,
                       backgroundColor: headerBlue,
-                      backgroundImage: profile.profileImageUrl.isNotEmpty
-                          ? NetworkImage(profile.profileImageUrl)
-                          : null,
-                      child: profile.profileImageUrl.isEmpty
-                          ? Icon(Icons.person, size: 80.r, color: Colors.black)
-                          : null,
+                      imageUrl: profile.profileImageUrl,
+                      iconColor: Colors.white,
+                      iconSize: 72.r,
+                      semanticLabel: '${profile.fullName} profile photo',
                     ),
                   ),
                 ),
@@ -177,25 +234,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    "Basic Information",
+                    "Personal Information",
                     style:
                         TextStyle(fontSize: 18.sp, fontWeight: FontWeight.bold),
                   ),
                   SizedBox(height: 20.h),
                   _buildInfoRow("Name:", profile.fullName),
-                  if (isPastStudent) ...[
-                    _buildInfoRow(
-                      "Year graduated / last attended:",
-                      profile.yearLevel,
-                    ),
-                    _buildInfoRow("Program:", profile.program),
-                  ] else ...[
+                  _buildInfoRow("Account type:", profile.roleLabel),
+                  if (profile.isCurrentStudent)
                     _buildInfoRow("Student ID:", profile.studentId),
-                    _buildInfoRow("Year level:", profile.yearLevel),
-                    _buildInfoRow("Program:", profile.program),
-                    _buildInfoRow("School Email:", profile.schoolEmail),
-                  ],
-                  _buildInfoRow("Login Email:", profile.personalEmail),
+                  _buildInfoRow(
+                    "${profile.academicYearLabel}:",
+                    profile.yearLevel,
+                  ),
+                  _buildInfoRow(
+                    "${profile.programLabel}:",
+                    profile.program,
+                  ),
+                  if (profile.usesSchoolLogin)
+                    _buildInfoRow(
+                      "School / login email:",
+                      profile.schoolEmail,
+                    )
+                  else
+                    _buildInfoRow("Login email:", profile.personalEmail),
                 ],
               ),
             ),
@@ -216,6 +278,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   setState(() {
                     _profile = updated;
                   });
+                  widget.onProfileChanged?.call(updated);
                 }
               },
               style: ElevatedButton.styleFrom(
@@ -265,7 +328,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 100.w,
+            width: 132.w,
             child: Text(
               label,
               style: TextStyle(fontSize: 13.sp, color: Colors.black87),

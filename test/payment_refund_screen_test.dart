@@ -48,6 +48,7 @@ void main() {
 
     expect(find.byType(PaymentRefundScreen), findsOneWidget);
     expect(find.text('Refund summary'), findsOneWidget);
+    expect(find.text('How the refund works'), findsOneWidget);
     expect(find.text('PHP 600.00'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

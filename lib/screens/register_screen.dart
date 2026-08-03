@@ -20,6 +20,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+  final _postgraduateProgramController = TextEditingController();
 
   final _emailRegex =
       RegExp(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$');
@@ -50,6 +51,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
   bool _isSubmitting = false;
 
   bool get _isAlumni => _role == 'alumni';
+  bool get _isFormerStudent => _role == 'former_student';
+  bool get _isPostgraduate => _role == 'masters' || _role == 'doctorate';
+  String get _resolvedProgram => _isPostgraduate
+      ? _postgraduateProgramController.text.trim()
+      : _program ?? '';
 
   @override
   void initState() {
@@ -70,6 +76,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
+    _postgraduateProgramController.dispose();
     super.dispose();
   }
 
@@ -140,7 +147,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         email: email,
         password: _passwordController.text,
         yearLevel: _academicYear,
-        program: _program,
+        program: _resolvedProgram,
       );
 
       if (!mounted) return;
@@ -171,19 +178,37 @@ class _RegisterScreenState extends State<RegisterScreen> {
         children: [
           Expanded(
             flex: 2,
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.only(top: 40),
-                child: Image.asset(
-                  'assets/logo/logo.png',
-                  height: 50,
-                  errorBuilder: (_, __, ___) => const Icon(
-                    Icons.image_outlined,
-                    color: _primaryBlue,
-                    size: 42,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 40),
+                    child: Image.asset(
+                      'assets/logo/logo.png',
+                      height: 50,
+                      errorBuilder: (_, __, ___) => const Icon(
+                        Icons.image_outlined,
+                        color: _primaryBlue,
+                        size: 42,
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                SafeArea(
+                  bottom: false,
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: IconButton(
+                      key: const Key('registration_back_button'),
+                      tooltip: 'Back to login',
+                      onPressed: () => Navigator.maybePop(context),
+                      icon: const Icon(Icons.arrow_back_rounded),
+                      color: _darkNavy,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           Expanded(
@@ -403,23 +428,35 @@ class _RegisterScreenState extends State<RegisterScreen> {
       key: const Key('account_type_field'),
       initialValue: _role,
       isExpanded: true,
-      decoration: _inputDecoration(hint: 'Account Type'),
+      decoration: _inputDecoration(hint: 'Requester Type'),
       items: const [
         DropdownMenuItem(
           key: Key('account_type_former_student'),
           value: 'former_student',
-          child: Text('Former student'),
+          child: Text('Former / stopped student'),
         ),
         DropdownMenuItem(
           key: Key('account_type_alumni'),
           value: 'alumni',
           child: Text('Alumni'),
         ),
+        DropdownMenuItem(
+          key: Key('account_type_masters'),
+          value: 'masters',
+          child: Text("Master's"),
+        ),
+        DropdownMenuItem(
+          key: Key('account_type_doctorate'),
+          value: 'doctorate',
+          child: Text('Doctorate'),
+        ),
       ],
       onChanged: (value) {
         setState(() {
           _role = value;
           _academicYear = null;
+          _program = null;
+          _postgraduateProgramController.clear();
         });
       },
       validator: (value) =>
@@ -428,11 +465,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Widget _buildYearField() {
-    final hint = _role == null
-        ? 'Year Graduated / Last Attended'
-        : _isAlumni
-            ? 'Year Graduated'
-            : 'Year Last Attended';
+    final hint = switch (_role) {
+      'alumni' => 'Year Graduated',
+      'former_student' => 'Year Last Attended',
+      'masters' || 'doctorate' => 'Year Graduated / Last Attended',
+      _ => 'Year Graduated / Last Attended',
+    };
     return DropdownButtonFormField<String>(
       key: ValueKey('academic_year_${_role ?? 'none'}'),
       initialValue: _academicYear,
@@ -450,14 +488,25 @@ class _RegisterScreenState extends State<RegisterScreen> {
       validator: (value) {
         if (_role == null) return null;
         if (value != null) return null;
-        return _isAlumni
-            ? 'Select your year graduated'
-            : 'Select your year last attended';
+        if (_isAlumni) return 'Select your year graduated';
+        if (_isFormerStudent) return 'Select your year last attended';
+        return 'Select your year graduated or last attended';
       },
     );
   }
 
   Widget _buildProgramField() {
+    if (_isPostgraduate) {
+      return _textField(
+        key: const Key('postgraduate_program_field'),
+        controller: _postgraduateProgramController,
+        hint: _role == 'doctorate' ? 'Doctorate Program' : "Master's Program",
+        textCapitalization: TextCapitalization.words,
+        validator: (value) =>
+            value == null || value.trim().isEmpty ? 'Enter your program' : null,
+      );
+    }
+
     return DropdownButtonFormField<String>(
       key: const Key('program_field'),
       initialValue: _program,

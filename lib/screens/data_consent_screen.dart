@@ -23,6 +23,15 @@ class _DataConsentScreenState extends State<DataConsentScreen> {
         elevation: 0,
         centerTitle: true,
         automaticallyImplyLeading: false,
+        leading: IconButton(
+          key: const Key('consent_back_button'),
+          tooltip: 'Back to home',
+          onPressed: () => Navigator.maybePop(context),
+          icon: const Icon(
+            Icons.arrow_back_rounded,
+            color: Color(0xFF233446),
+          ),
+        ),
         title: Image.asset(
           'assets/logo/logo.png',
           width: 92.w,
@@ -62,6 +71,37 @@ class _DataConsentScreenState extends State<DataConsentScreen> {
                   fontSize: 22.sp,
                   fontWeight: FontWeight.w700,
                 ),
+              ),
+            ),
+            SizedBox(height: 18.h),
+            Container(
+              width: double.infinity,
+              padding: EdgeInsets.all(14.w),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEAF1F5),
+                borderRadius: BorderRadius.circular(12.r),
+                border: Border.all(color: const Color(0xFFC9D9E3)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.info_outline_rounded,
+                    size: 20.sp,
+                    color: const Color(0xFF356A94),
+                  ),
+                  SizedBox(width: 10.w),
+                  Expanded(
+                    child: Text(
+                      "Document requests are available to alumni, former or stopped students, Master's, and Doctorate requesters.",
+                      style: TextStyle(
+                        fontSize: 12.sp,
+                        height: 1.35,
+                        color: const Color(0xFF233446),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
             SizedBox(height: 18.h),

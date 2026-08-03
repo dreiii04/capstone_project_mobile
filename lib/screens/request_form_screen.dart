@@ -203,6 +203,15 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
         elevation: 0,
         centerTitle: true,
         automaticallyImplyLeading: false,
+        leading: IconButton(
+          key: const Key('request_form_back_button'),
+          tooltip: 'Back to data consent',
+          onPressed: _isSubmitting ? null : () => Navigator.maybePop(context),
+          icon: const Icon(
+            Icons.arrow_back_rounded,
+            color: Color(0xFF233446),
+          ),
+        ),
         title: Image.asset(
           'assets/logo/logo.png',
           width: 92.w,

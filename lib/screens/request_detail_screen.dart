@@ -6,7 +6,6 @@ import '../widgets/custom_font.dart';
 import '../screens/payment_details_screen.dart';
 import '../screens/pending_screen.dart';
 
-
 class RequestDetailsScreen extends StatelessWidget {
   final PendingRequest request;
   const RequestDetailsScreen({super.key, required this.request});
@@ -20,19 +19,26 @@ class RequestDetailsScreen extends StatelessWidget {
     final needsPayment = statusUpper == 'PENDING FOR PAYMENT';
     final pendingCompletion = statusUpper == 'PENDING TO COMPLETE';
     final statusNote = needsPayment
-      ? "Payment is required to continue processing your request. Please complete your payment to proceed."
-      : pendingCompletion
-        ? "Payment received. Your request is pending completion."
-        : "Your request is being processed.";
+        ? "Payment is required to continue processing your request. Please complete your payment to proceed."
+        : pendingCompletion
+            ? "Payment received. Your request is pending completion."
+            : "Your request is being processed.";
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FA),
       appBar: AppBar(
         backgroundColor: const Color(0xFF5D7E97),
         title: const Text(
           "Information of the Request",
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(color: fbTextColorWhite),
         ),
-        leading: IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(context)),
+        leading: IconButton(
+          key: const Key('request_detail_back_button'),
+          tooltip: 'Back to requests',
+          icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+          onPressed: () => Navigator.maybePop(context),
+        ),
       ),
       body: SingleChildScrollView(
         padding: EdgeInsets.all(20.w),
@@ -41,17 +47,25 @@ class RequestDetailsScreen extends StatelessWidget {
             _buildSectionCard("Document Details", [
               _buildInfoRow("Type of Document:", request.docName),
               _buildInfoRow("Purpose of Request:", request.purpose),
-              _buildInfoRow("Date Requested:", DateFormat('MMMM d, y').format(request.dateCreated)),
+              _buildInfoRow("Date Requested:",
+                  DateFormat('MMMM d, y').format(request.dateCreated)),
             ]),
             SizedBox(height: 15.h),
             _buildSectionCard("Request Status", [
-              _buildInfoRow("Date:", DateFormat('MMMM d, y').format(request.dateCreated)),
-              _buildInfoRow("Time:", DateFormat('h:mm a').format(request.dateCreated)),
+              _buildInfoRow(
+                  "Date:", DateFormat('MMMM d, y').format(request.dateCreated)),
+              _buildInfoRow(
+                  "Time:", DateFormat('h:mm a').format(request.dateCreated)),
               SizedBox(height: 10.h),
               Container(
                 padding: EdgeInsets.symmetric(horizontal: 10.w, vertical: 4.h),
-                decoration: BoxDecoration(color: Colors.yellow.shade100, borderRadius: BorderRadius.circular(5.r)),
-                child: Text(request.status, style: TextStyle(color: Colors.yellow.shade800, fontWeight: FontWeight.bold)),
+                decoration: BoxDecoration(
+                    color: Colors.yellow.shade100,
+                    borderRadius: BorderRadius.circular(5.r)),
+                child: Text(request.status,
+                    style: TextStyle(
+                        color: Colors.yellow.shade800,
+                        fontWeight: FontWeight.bold)),
               ),
               SizedBox(height: 10.h),
               Text(
@@ -83,12 +97,18 @@ class RequestDetailsScreen extends StatelessWidget {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => PaymentDetailsScreen(request: request),
+                          builder: (context) =>
+                              PaymentDetailsScreen(request: request),
                         ),
                       );
                     },
-                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF233446)),
-                    child: CustomFont(text: "Pay now", color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14.sp),
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF233446)),
+                    child: CustomFont(
+                        text: "Pay now",
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14.sp),
                   ),
                 ),
             ]),
@@ -110,7 +130,8 @@ class RequestDetailsScreen extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: TextStyle(fontSize: 16.sp, fontWeight: FontWeight.bold)),
+          Text(title,
+              style: TextStyle(fontSize: 16.sp, fontWeight: FontWeight.bold)),
           const Divider(),
           ...children,
         ],
@@ -122,10 +143,28 @@ class RequestDetailsScreen extends StatelessWidget {
     return Padding(
       padding: EdgeInsets.symmetric(vertical: 4.h),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: TextStyle(fontSize: 13.sp, color: Colors.black54)),
-          Text(value, style: TextStyle(fontSize: 13.sp, fontWeight: isBold ? FontWeight.bold : FontWeight.normal)),
+          Expanded(
+            flex: 4,
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 13.sp, color: Colors.black54),
+            ),
+          ),
+          SizedBox(width: 12.w),
+          Expanded(
+            flex: 6,
+            child: Text(
+              value,
+              textAlign: TextAlign.end,
+              softWrap: true,
+              style: TextStyle(
+                fontSize: 13.sp,
+                fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ),
         ],
       ),
     );

@@ -703,6 +703,13 @@ class MongoDataApiService {
       return response.data;
     }
 
+    // Treat an already-recorded refund as an idempotent success. This can
+    // happen when the first submission succeeded but its response was lost.
+    if (response.statusCode == 409 &&
+        response.data['refundStatus']?.toString().trim().isNotEmpty == true) {
+      return response.data;
+    }
+
     throw Exception(
       _messageFor(response.data, 'Failed to submit refund request.'),
     );

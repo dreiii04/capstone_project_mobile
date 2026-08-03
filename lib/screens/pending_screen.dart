@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../screens/request_detail_screen.dart';
-import '../widgets/custom_font.dart';
 
 class PendingRequest {
   final String docName;
@@ -24,8 +23,17 @@ class PendingRequest {
 
 class PendingScreen extends StatefulWidget {
   final List<PendingRequest> requestList;
+  final bool isLoading;
+  final String? errorMessage;
+  final Future<void> Function()? onRefresh;
 
-  const PendingScreen({super.key, required this.requestList});
+  const PendingScreen({
+    super.key,
+    required this.requestList,
+    this.isLoading = false,
+    this.errorMessage,
+    this.onRefresh,
+  });
 
   @override
   State<PendingScreen> createState() => _PendingScreenState();
@@ -33,7 +41,35 @@ class PendingScreen extends StatefulWidget {
 
 class _PendingScreenState extends State<PendingScreen> {
   static const double _maxContentWidth = 760;
+  static const Color _primaryBlue = Color(0xFF5D7E97);
   String _selectedFilter = 'All';
+
+  bool get _hasError => widget.errorMessage?.trim().isNotEmpty == true;
+
+  @override
+  void didUpdateWidget(covariant PendingScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_selectedFilter != 'All' &&
+        !widget.requestList
+            .any((request) => request.docName == _selectedFilter)) {
+      _selectedFilter = 'All';
+    }
+  }
+
+  Future<void> _refresh() async {
+    final callback = widget.onRefresh;
+    if (callback != null) await callback();
+  }
+
+  Future<void> _openDetails(PendingRequest item) async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => RequestDetailsScreen(request: item),
+      ),
+    );
+    if (mounted) await _refresh();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -57,9 +93,12 @@ class _PendingScreenState extends State<PendingScreen> {
           body: Column(
             children: [
               Container(
-                height: isTablet ? 72 : 64,
                 width: double.infinity,
-                color: const Color(0xFF5D7E97),
+                color: _primaryBlue,
+                child: SafeArea(
+                  bottom: false,
+                  child: SizedBox(height: isTablet ? 48 : 40),
+                ),
               ),
               Expanded(
                 child: Align(
@@ -74,20 +113,29 @@ class _PendingScreenState extends State<PendingScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           SizedBox(height: isTablet ? 26 : 18),
-                          Text(
-                            'Pending',
-                            style: TextStyle(
-                              color: const Color(0xFF1F252A),
-                              fontSize: isTablet ? 36 : 30,
-                              fontWeight: FontWeight.w700,
-                            ),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Pending',
+                                  style: TextStyle(
+                                    color: const Color(0xFF1F252A),
+                                    fontSize: isTablet ? 36 : 30,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                              _buildRefreshButton(isTablet),
+                            ],
                           ),
                           SizedBox(height: isTablet ? 18 : 12),
                           DropdownButtonFormField<String>(
+                            key: const Key('pending_filter'),
                             initialValue: _selectedFilter,
                             isExpanded: true,
                             icon: const Icon(Icons.keyboard_arrow_down_rounded),
                             decoration: InputDecoration(
+                              labelText: 'Filter by document',
                               filled: true,
                               fillColor: Colors.white,
                               contentPadding: EdgeInsets.symmetric(
@@ -128,35 +176,27 @@ class _PendingScreenState extends State<PendingScreen> {
                               setState(() => _selectedFilter = value);
                             },
                           ),
+                          if (_hasError && widget.requestList.isNotEmpty) ...[
+                            SizedBox(height: isTablet ? 14 : 10),
+                            _buildErrorBanner(isTablet),
+                          ],
+                          if (widget.isLoading &&
+                              widget.requestList.isNotEmpty) ...[
+                            SizedBox(height: isTablet ? 14 : 10),
+                            const LinearProgressIndicator(
+                              key: Key('pending_refresh_progress'),
+                              color: _primaryBlue,
+                              backgroundColor: Color(0xFFDDE7ED),
+                            ),
+                          ],
                           SizedBox(height: isTablet ? 20 : 14),
                           Expanded(
-                            child: filteredList.isEmpty
-                                ? _buildEmptyState(isTablet)
-                                : ListView.separated(
-                                    padding: EdgeInsets.only(
-                                      bottom: isTablet ? 32 : 22,
-                                    ),
-                                    itemCount: filteredList.length,
-                                    separatorBuilder: (_, __) => SizedBox(
-                                      height: isTablet ? 16 : 12,
-                                    ),
-                                    itemBuilder: (context, index) {
-                                      final item = filteredList[index];
-                                      return _buildCard(
-                                        item,
-                                        isTablet: isTablet,
-                                        onTap: () => Navigator.push(
-                                          context,
-                                          MaterialPageRoute(
-                                            builder: (context) =>
-                                                RequestDetailsScreen(
-                                              request: item,
-                                            ),
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
+                            child: RefreshIndicator(
+                              key: const Key('pending_refresh_indicator'),
+                              color: _primaryBlue,
+                              onRefresh: _refresh,
+                              child: _buildBody(filteredList, isTablet),
+                            ),
                           ),
                         ],
                       ),
@@ -168,6 +208,201 @@ class _PendingScreenState extends State<PendingScreen> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildRefreshButton(bool isTablet) {
+    return IconButton(
+      key: const Key('pending_refresh_button'),
+      tooltip: 'Refresh pending requests',
+      onPressed: widget.onRefresh == null || widget.isLoading ? null : _refresh,
+      style: IconButton.styleFrom(
+        minimumSize: Size.square(isTablet ? 50 : 44),
+        backgroundColor: const Color(0xFFE3EDF3),
+        foregroundColor: _primaryBlue,
+      ),
+      icon: widget.isLoading
+          ? SizedBox.square(
+              dimension: isTablet ? 22 : 19,
+              child: const CircularProgressIndicator(strokeWidth: 2.3),
+            )
+          : const Icon(Icons.refresh_rounded),
+    );
+  }
+
+  Widget _buildBody(List<PendingRequest> filteredList, bool isTablet) {
+    if (widget.isLoading && widget.requestList.isEmpty) {
+      return _buildScrollableState(
+        key: const Key('pending_loading_state'),
+        icon: const SizedBox.square(
+          dimension: 42,
+          child: CircularProgressIndicator(color: _primaryBlue),
+        ),
+        title: 'Loading pending requests…',
+        message: 'Please wait while we get the latest request updates.',
+        isTablet: isTablet,
+      );
+    }
+
+    if (_hasError && widget.requestList.isEmpty) {
+      return _buildScrollableState(
+        key: const Key('pending_error_state'),
+        icon: Icon(
+          Icons.cloud_off_rounded,
+          size: isTablet ? 82 : 66,
+          color: const Color(0xFF8A98A3),
+        ),
+        title: 'Pending requests could not be loaded',
+        message: widget.errorMessage!.trim(),
+        isTablet: isTablet,
+        action: _buildRetryButton('Try again'),
+      );
+    }
+
+    if (filteredList.isEmpty) {
+      final filtered = widget.requestList.isNotEmpty;
+      return _buildScrollableState(
+        key: const Key('pending_empty_state'),
+        icon: Icon(
+          filtered
+              ? Icons.filter_alt_off_rounded
+              : Icons.pending_actions_rounded,
+          size: isTablet ? 88 : 70,
+          color: const Color(0xFFB5C1C8),
+        ),
+        title:
+            filtered ? 'No requests match this filter' : 'No pending requests',
+        message: filtered
+            ? 'Choose All or another document type to see your requests.'
+            : 'New and in-progress document requests will appear here.',
+        isTablet: isTablet,
+        action: filtered
+            ? OutlinedButton(
+                key: const Key('pending_clear_filter_button'),
+                onPressed: () => setState(() => _selectedFilter = 'All'),
+                child: const Text('Show all requests'),
+              )
+            : _buildRetryButton('Refresh'),
+      );
+    }
+
+    return ListView.separated(
+      key: const Key('pending_request_list'),
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: EdgeInsets.only(bottom: isTablet ? 32 : 22),
+      itemCount: filteredList.length,
+      separatorBuilder: (_, __) => SizedBox(height: isTablet ? 16 : 12),
+      itemBuilder: (context, index) {
+        final item = filteredList[index];
+        return _buildCard(
+          item,
+          isTablet: isTablet,
+          onTap: () => _openDetails(item),
+        );
+      },
+    );
+  }
+
+  Widget _buildScrollableState({
+    required Key key,
+    required Widget icon,
+    required String title,
+    required String message,
+    required bool isTablet,
+    Widget? action,
+  }) {
+    return CustomScrollView(
+      key: key,
+      physics: const AlwaysScrollableScrollPhysics(),
+      slivers: [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 20, 22, 48),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  icon,
+                  SizedBox(height: isTablet ? 20 : 15),
+                  Text(
+                    title,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: const Color(0xFF33434E),
+                      fontSize: isTablet ? 20 : 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 7),
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: const Color(0xFF788791),
+                      fontSize: isTablet ? 15 : 13,
+                      height: 1.4,
+                    ),
+                  ),
+                  if (action != null) ...[
+                    const SizedBox(height: 18),
+                    action,
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget? _buildRetryButton(String label) {
+    if (widget.onRefresh == null) return null;
+    return FilledButton.icon(
+      key: Key(
+        'pending_state_${label.toLowerCase().replaceAll(' ', '_')}_button',
+      ),
+      onPressed: widget.isLoading ? null : _refresh,
+      style: FilledButton.styleFrom(backgroundColor: _primaryBlue),
+      icon: const Icon(Icons.refresh_rounded),
+      label: Text(label),
+    );
+  }
+
+  Widget _buildErrorBanner(bool isTablet) {
+    return Container(
+      key: const Key('pending_error_banner'),
+      width: double.infinity,
+      padding: EdgeInsets.all(isTablet ? 14 : 11),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3F1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFD2CC)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.error_outline_rounded, color: Color(0xFFB42318)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              widget.errorMessage!.trim(),
+              style: TextStyle(
+                color: const Color(0xFF7A271A),
+                fontSize: isTablet ? 14 : 12,
+                height: 1.35,
+              ),
+            ),
+          ),
+          if (widget.onRefresh != null)
+            IconButton(
+              tooltip: 'Try again',
+              onPressed: widget.isLoading ? null : _refresh,
+              icon: const Icon(Icons.refresh_rounded),
+              color: const Color(0xFFB42318),
+            ),
+        ],
+      ),
     );
   }
 
@@ -198,7 +433,7 @@ class _PendingScreenState extends State<PendingScreen> {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            color: const Color(0xFF9AA2A8),
+            color: const Color(0xFF7B878F),
             fontSize: isTablet ? 15 : 12,
           ),
         ),
@@ -206,7 +441,7 @@ class _PendingScreenState extends State<PendingScreen> {
     );
 
     final statusBadge = ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: isTablet ? 210 : 150),
+      constraints: BoxConstraints(maxWidth: isTablet ? 210 : 170),
       child: Container(
         padding: EdgeInsets.symmetric(
           horizontal: isTablet ? 14 : 10,
@@ -218,7 +453,7 @@ class _PendingScreenState extends State<PendingScreen> {
         ),
         child: Text(
           item.status,
-          maxLines: 1,
+          maxLines: 2,
           overflow: TextOverflow.ellipsis,
           textAlign: TextAlign.center,
           style: TextStyle(
@@ -284,38 +519,17 @@ class _PendingScreenState extends State<PendingScreen> {
   Color _getStatusColor(String status) {
     switch (status.toUpperCase()) {
       case 'PENDING FOR PAYMENT':
-        return const Color(0xFFE99A18);
+        return const Color(0xFFC67500);
       case 'PENDING TO COMPLETE':
         return Colors.blueGrey;
       case 'RELEASED':
         return Colors.orange;
       case 'PROCESSING':
-        return Colors.green;
+        return const Color(0xFF218739);
       case 'APPROVED':
-        return Colors.blue;
+        return const Color(0xFF246BCE);
       default:
-        return Colors.yellow.shade700;
+        return const Color(0xFF8A6D00);
     }
-  }
-
-  Widget _buildEmptyState(bool isTablet) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.history_edu,
-            size: isTablet ? 92 : 72,
-            color: Colors.grey.shade300,
-          ),
-          SizedBox(height: isTablet ? 20 : 14),
-          CustomFont(
-            text: 'No pending requests found.',
-            fontSize: isTablet ? 18 : 15,
-            color: Colors.grey.shade500,
-          ),
-        ],
-      ),
-    );
   }
 }

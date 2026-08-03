@@ -95,21 +95,29 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
                       ),
                       const SizedBox(height: 16),
                       _buildStatusCard(),
+                      if (item.isRejected) ...[
+                        const SizedBox(height: 16),
+                        _buildRemarksCard(),
+                      ],
                       const SizedBox(height: 16),
                       _buildCard(
-                        title: 'Payment summary',
+                        title: 'Payment information',
                         icon: Icons.payments_outlined,
-                        children: [
-                          _row('Amount paid', _amountLabel(item.totalAmount)),
-                          _row(
-                            'Payment method',
-                            _paymentMethodLabel(item.paymentType),
-                          ),
-                          _row(
-                            'Date paid',
-                            DateFormat('MMM d, y').format(item.date),
-                          ),
-                        ],
+                        children: item.totalAmount > 0 &&
+                                item.paymentType.trim().isNotEmpty
+                            ? [
+                                _row(
+                                  'Amount paid',
+                                  _amountLabel(item.totalAmount),
+                                ),
+                                _row(
+                                  'Payment method',
+                                  _paymentMethodLabel(item.paymentType),
+                                ),
+                              ]
+                            : [
+                                _row('Payment', 'No payment recorded'),
+                              ],
                       ),
                       if (item.hasRefundRequest) ...[
                         const SizedBox(height: 16),
@@ -166,10 +174,10 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
     final message = item.isApproved
         ? "This document has been processed and released by the Registrar's Office."
         : item.hasRefundRequest
-            ? 'This request was rejected and your refund request is being reviewed.'
+            ? 'This request was rejected. See the latest refund update below.'
             : item.canRequestRefund
                 ? 'This request was rejected after payment was received. You can request a refund below.'
-                : 'This request was rejected. Please contact the office for more details.';
+                : 'This request was rejected. Review the office remarks below for more information.';
 
     return _buildCard(
       title: 'Final status',
@@ -218,36 +226,125 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
     );
   }
 
+  Widget _buildRemarksCard() {
+    return KeyedSubtree(
+      key: const Key('history_detail_remarks'),
+      child: _buildCard(
+        title: 'Remarks',
+        icon: Icons.chat_bubble_outline_rounded,
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF5F3),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFFFD7D1)),
+            ),
+            child: Text(
+              item.displayRemarks,
+              style: const TextStyle(
+                color: Color(0xFF73413C),
+                fontSize: 14,
+                height: 1.45,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildRefundStatusCard() {
+    final normalized = item.refundStatus
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[\s-]+'), '_');
+
+    late final String title;
+    late final String message;
+    late final IconData icon;
+    late final Color backgroundColor;
+    late final Color borderColor;
+    late final Color foregroundColor;
+
+    if (normalized.contains('reject') || normalized.contains('declin')) {
+      title = 'Refund needs attention';
+      message =
+          "The refund could not be approved. Please contact the Registrar's Office for the next steps.";
+      icon = Icons.error_outline_rounded;
+      backgroundColor = const Color(0xFFFFF3F1);
+      borderColor = const Color(0xFFFFC9C2);
+      foregroundColor = const Color(0xFF9A2318);
+    } else if (normalized.contains('pending') ||
+        normalized.contains('review')) {
+      title = 'Refund under review';
+      message =
+          'The office is reviewing your refund request. You will be notified when its status changes.';
+      icon = Icons.schedule_rounded;
+      backgroundColor = const Color(0xFFFFF8E7);
+      borderColor = const Color(0xFFFFE09A);
+      foregroundColor = const Color(0xFF765B1B);
+    } else if (normalized == 'refunded' ||
+        normalized.contains('complete') ||
+        normalized.contains('sent') ||
+        normalized.contains('paid_out')) {
+      title = 'Refund sent';
+      message =
+          'The office marked your refund as sent. Please check the account provided in your refund request.';
+      icon = Icons.check_circle_outline_rounded;
+      backgroundColor = const Color(0xFFECF8EF);
+      borderColor = const Color(0xFFB7E1C0);
+      foregroundColor = const Color(0xFF187331);
+    } else if (normalized.contains('approv') ||
+        normalized.contains('process')) {
+      title = 'Refund approved';
+      message =
+          'Your refund was approved and is being processed for the account you provided.';
+      icon = Icons.currency_exchange_rounded;
+      backgroundColor = const Color(0xFFEEF6FA);
+      borderColor = const Color(0xFFC9E0EB);
+      foregroundColor = const Color(0xFF356A86);
+    } else {
+      title = 'Refund $_refundStatusLabel';
+      message =
+          "Your refund status was updated. Contact the Registrar's Office if you need more information.";
+      icon = Icons.info_outline_rounded;
+      backgroundColor = const Color(0xFFF2F5F7);
+      borderColor = const Color(0xFFD8E0E5);
+      foregroundColor = const Color(0xFF4C606D);
+    }
+
     return Container(
+      key: const Key('history_detail_refund_status'),
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFF8E7),
+        color: backgroundColor,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFFFE09A)),
+        border: Border.all(color: borderColor),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.schedule_rounded, color: Color(0xFF9A6700)),
+          Icon(icon, color: foregroundColor),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Refund $_refundStatusLabel',
-                  style: const TextStyle(
-                    color: Color(0xFF694A00),
+                  title,
+                  style: TextStyle(
+                    color: foregroundColor,
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
                 const SizedBox(height: 5),
-                const Text(
-                  'The office is reviewing your refund. You will receive a notification when its status changes.',
+                Text(
+                  message,
                   style: TextStyle(
-                    color: Color(0xFF765B1B),
+                    color: foregroundColor,
                     fontSize: 13,
                     height: 1.4,
                   ),

@@ -87,10 +87,12 @@ const app = express();
 
 const uploadsDir = path.join(__dirname, '..', 'uploads');
 const receiptsDir = path.join(uploadsDir, 'receipts');
+const profilesDir = path.join(uploadsDir, 'profiles');
 try {
   fs.mkdirSync(receiptsDir, { recursive: true });
+  fs.mkdirSync(profilesDir, { recursive: true });
 } catch (err) {
-  console.warn('Could not create receipts upload directory (read-only filesystem):', err.message);
+  console.warn('Could not create upload directories (read-only filesystem):', err.message);
 }
 
 const allowedReceiptMimeTypes = new Set([
@@ -350,12 +352,14 @@ function makeRequestId() {
 
 function buildUserResponse(user) {
   if (!user) return null;
+  const role = normalizeRole(user.role);
   return {
     id: user._id || user.id,
     firstName: user.firstName,
     lastName: user.lastName,
     email: user.email,
-    role: user.role,
+    role,
+    roleLabel: getRequesterRoleLabel(role),
   };
 }
 
@@ -372,6 +376,7 @@ function buildProfileResponse(user) {
     email: isStudent && schoolEmail ? schoolEmail : user.email,
     personalEmail: isStudent ? '' : user.personalEmail || user.email || '',
     role: role || 'alumni',
+    roleLabel: getRequesterRoleLabel(role),
     schoolEmail,
     studentId: isStudent ? user.studentId || '' : '',
     yearLevel: user.yearLevel || '',
@@ -380,18 +385,78 @@ function buildProfileResponse(user) {
 }
 
 function normalizeRole(role) {
-  const normalized = String(role || '').trim().toLowerCase();
+  const normalized = String(role || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
   if (normalized === 'student') return 'student';
-  if (normalized === 'former_student') return 'former_student';
+  if (
+    normalized === 'former_student' ||
+    normalized === 'stopped_student' ||
+    normalized === 'student_stopped' ||
+    normalized === 'stopped'
+  ) {
+    return 'former_student';
+  }
+  if (
+    normalized === 'masters' ||
+    normalized === 'master' ||
+    normalized === "master's" ||
+    normalized === 'masters_student' ||
+    normalized === 'graduate_student'
+  ) {
+    return 'masters';
+  }
+  if (
+    normalized === 'doctorate' ||
+    normalized === 'doctoral' ||
+    normalized === 'doctorate_student' ||
+    normalized === 'doctoral_student' ||
+    normalized === 'phd'
+  ) {
+    return 'doctorate';
+  }
   return 'alumni';
 }
 
-function parseRegistrationRole(role) {
-  const normalized = String(role || '').trim().toLowerCase();
-  if (normalized === 'former_student' || normalized === 'alumni') {
-    return normalized;
+function getRequesterRoleLabel(role) {
+  switch (normalizeRole(role)) {
+    case 'student':
+      return 'Student';
+    case 'former_student':
+      return 'Former Student';
+    case 'masters':
+      return "Master's";
+    case 'doctorate':
+      return 'Doctorate';
+    default:
+      return 'Alumni';
   }
-  return '';
+}
+
+function parseRegistrationRole(role) {
+  const normalized = String(role || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  const accepted = new Set([
+    'former_student',
+    'stopped_student',
+    'student_stopped',
+    'stopped',
+    'alumni',
+    'masters',
+    'master',
+    "master's",
+    'masters_student',
+    'graduate_student',
+    'doctorate',
+    'doctoral',
+    'doctorate_student',
+    'doctoral_student',
+    'phd',
+  ]);
+  return accepted.has(normalized) ? normalizeRole(normalized) : '';
 }
 
 function getCollectionForRole(role) {
@@ -491,6 +556,161 @@ function toNonNegativeNumber(value, fallback) {
   return parsed;
 }
 
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (value == null) continue;
+    const normalized = String(value).trim();
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function firstMeaningfulString(...values) {
+  const placeholders = new Set([
+    'none',
+    'null',
+    'n/a',
+    'na',
+    '_',
+    'not_applicable',
+  ]);
+  for (const value of values) {
+    const normalized = firstNonEmptyString(value);
+    if (normalized && !placeholders.has(normalizeWorkflowStatus(normalized))) {
+      return normalized;
+    }
+  }
+  return '';
+}
+
+function normalizeWorkflowStatus(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+const terminalWorkflowStatuses = new Set([
+  'approved',
+  'completed',
+  'complete',
+  'released',
+  'rejected',
+  'declined',
+  'denied',
+  'cancelled',
+  'canceled',
+  'refunded',
+]);
+
+function isTerminalWorkflowStatus(value) {
+  return terminalWorkflowStatuses.has(normalizeWorkflowStatus(value));
+}
+
+function isRejectedWorkflowStatus(value) {
+  const normalized = normalizeWorkflowStatus(value);
+  return normalized === 'rejected' ||
+    normalized === 'declined' ||
+    normalized === 'denied';
+}
+
+function resolveWorkflowStatus(record, {
+  preferMobile = false,
+  linkedRecord = null,
+} = {}) {
+  if (!record && !linkedRecord) return '';
+  const primary = preferMobile
+    ? [record?.mobileStatus, record?.status, record?.state, record?.requestStatus]
+    : [record?.status, record?.state, record?.mobileStatus, record?.requestStatus];
+  const linked = preferMobile
+    ? [
+        linkedRecord?.mobileStatus,
+        linkedRecord?.status,
+        linkedRecord?.state,
+        linkedRecord?.requestStatus,
+      ]
+    : [
+        linkedRecord?.status,
+        linkedRecord?.state,
+        linkedRecord?.mobileStatus,
+        linkedRecord?.requestStatus,
+      ];
+  const allCandidates = [...primary, ...linked];
+  const rejected = allCandidates.find(isRejectedWorkflowStatus);
+  const terminal = allCandidates.find(isTerminalWorkflowStatus);
+  return firstNonEmptyString(rejected, terminal, ...primary, ...linked);
+}
+
+function getRecordRemarks(record, linkedRecord = null) {
+  return firstMeaningfulString(
+    record?.remarks,
+    record?.remark,
+    record?.rejectionReason,
+    record?.adminRemarks,
+    record?.rejectionRemarks,
+    record?.statusRemarks,
+    linkedRecord?.remarks,
+    linkedRecord?.remark,
+    linkedRecord?.rejectionReason,
+    linkedRecord?.adminRemarks,
+    linkedRecord?.rejectionRemarks,
+    linkedRecord?.statusRemarks,
+  );
+}
+
+function getStoredRequestId(record) {
+  return firstNonEmptyString(
+    record?.requestId,
+    record?.request_id,
+    record?.linkedRequestId,
+  );
+}
+
+function getRequestResponseId(record) {
+  return firstNonEmptyString(
+    getStoredRequestId(record),
+    record?._id,
+    record?.id,
+  );
+}
+
+function buildRefundGuidance({
+  status,
+  amount,
+  paymentType,
+  refundStatus,
+  refundRequestedAt,
+}) {
+  const rejected = isRejectedWorkflowStatus(status);
+  const paymentReceived =
+    toNonNegativeNumber(amount, 0) > 0 && Boolean(firstNonEmptyString(paymentType));
+  const normalizedRefundStatus = firstMeaningfulString(refundStatus);
+  const refundEligible = rejected && paymentReceived && !normalizedRefundStatus;
+
+  let refundInstructions = '';
+  if (rejected && normalizedRefundStatus) {
+    refundInstructions =
+      `Your refund request is ${normalizedRefundStatus.toLowerCase()}. ` +
+      'You will receive a notification when its status changes.';
+  } else if (refundEligible) {
+    refundInstructions =
+      'This paid request was rejected. Submit your preferred GCash or bank ' +
+      'account details through the refund request form.';
+  } else if (rejected) {
+    refundInstructions =
+      'No received payment is recorded for this request. Contact the office ' +
+      'if you believe a refund is due.';
+  }
+
+  return {
+    refundEligible,
+    paymentReceived,
+    refundStatus: normalizedRefundStatus,
+    refundRequestedAt: firstNonEmptyString(refundRequestedAt),
+    refundInstructions,
+  };
+}
+
 const jwtIssuer = String(JWT_ISSUER || '').trim();
 const accessTokenTtlSeconds =
   toPositiveNumber(JWT_ACCESS_TTL_MINUTES, 15) * 60;
@@ -502,7 +722,7 @@ function signAccessToken(user) {
   const payload = {
     sub: String(user._id || user.id || ''),
     email: user.email,
-    role: user.role,
+    role: normalizeRole(user.role),
   };
   const options = jwtIssuer
     ? { expiresIn: accessTokenTtlSeconds, issuer: jwtIssuer }
@@ -691,7 +911,7 @@ function buildReceiptRecord({
   return {
     transactionId: `TXN-${Date.now()}`,
     transactionHash: `hash-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
-    requestId: trueRequestId || purpose, // Maps real requestId to link accurately
+    requestId: firstNonEmptyString(trueRequestId),
     name: `${user?.firstName || ''} ${user?.lastName || ''}`.trim(),
     documentType: docName || '',
     paymentMode: paymentType === 'onsite' ? 'Other Online Payment' : 'GCash',
@@ -699,12 +919,7 @@ function buildReceiptRecord({
     receiptImage: imageUrl || '',
     payerName: `${user?.firstName || ''} ${user?.lastName || ''}`.trim(),
     payerEmail: user?.email || '',
-    payerType:
-      normalizeRole(user?.role) === 'alumni'
-        ? 'Alumni'
-        : normalizeRole(user?.role) === 'former_student'
-          ? 'Former Student'
-          : 'Student',
+    payerType: getRequesterRoleLabel(user?.role),
     status: 'Pending Verification',
     date: new Date(),
 
@@ -790,11 +1005,10 @@ async function uploadProfilePhotoToCloudinary(file) {
       throw new Error('Cloudinary is not configured. Local uploads are not supported on Vercel. Please add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET to Vercel environment variables.');
     }
     const fileName = `profile-${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
-    const uploadDir = 'c:\\Users\\Sarah\\VeriFitorWeb\\Verifitor-Web-main\\backend\\uploads\\profiles';
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
+    if (!fs.existsSync(profilesDir)) {
+      fs.mkdirSync(profilesDir, { recursive: true });
     }
-    const filePath = path.join(uploadDir, fileName);
+    const filePath = path.join(profilesDir, fileName);
     await fs.promises.writeFile(filePath, file.buffer);
     return {
       secure_url: `/uploads/profiles/${fileName}`,
@@ -823,6 +1037,206 @@ async function uploadProfilePhotoToCloudinary(file) {
 
     upload.end(file.buffer);
   });
+}
+
+function buildMongoOwnerClauses(user) {
+  const clauses = [];
+  const userId = user?._id || user?.id;
+  if (userId) {
+    const stringId = String(userId);
+    if (ObjectId.isValid(stringId)) {
+      clauses.push({ userId: new ObjectId(stringId) });
+    }
+    clauses.push({ userId: stringId });
+  }
+  const email = normalizeEmail(user?.email);
+  if (emailRegex.test(email)) clauses.push({ email });
+  return clauses;
+}
+
+function recordBelongsToUser(record, user) {
+  const userId = user?._id || user?.id;
+  const email = normalizeEmail(user?.email);
+  return Boolean(
+    (userId && String(record?.userId || '') === String(userId)) ||
+    (email && normalizeEmail(record?.email) === email),
+  );
+}
+
+async function findLatestRequestForUser(user, {
+  requestId = '',
+  docName = '',
+  purpose = '',
+} = {}) {
+  const normalizedRequestId = firstNonEmptyString(requestId);
+  const normalizedDocName = firstNonEmptyString(docName);
+  const normalizedPurpose = firstNonEmptyString(purpose);
+  if (!normalizedRequestId && !normalizedDocName && !normalizedPurpose) {
+    return null;
+  }
+
+  if (dbEnabled) {
+    const ownerClauses = buildMongoOwnerClauses(user);
+    if (ownerClauses.length === 0) return null;
+
+    const matchClauses = [];
+    if (normalizedRequestId) {
+      matchClauses.push(
+        { requestId: normalizedRequestId },
+        { request_id: normalizedRequestId },
+        { linkedRequestId: normalizedRequestId },
+      );
+      if (ObjectId.isValid(normalizedRequestId)) {
+        matchClauses.push({ _id: new ObjectId(normalizedRequestId) });
+      }
+    }
+    if (normalizedDocName || normalizedPurpose) {
+      const details = {};
+      if (normalizedDocName) details.docName = normalizedDocName;
+      if (normalizedPurpose) details.purpose = normalizedPurpose;
+      matchClauses.push(details);
+    }
+
+    return requests.findOne(
+      { $and: [{ $or: ownerClauses }, { $or: matchClauses }] },
+      { sort: { createdAt: -1 } },
+    );
+  }
+
+  return [...memoryRequests]
+    .filter((record) => recordBelongsToUser(record, user))
+    .filter((record) => {
+      const identifiers = [
+        record?._id,
+        record?.id,
+        record?.requestId,
+        record?.request_id,
+        record?.linkedRequestId,
+      ].map((value) => firstNonEmptyString(value));
+      const matchesId = normalizedRequestId &&
+        identifiers.includes(normalizedRequestId);
+      const hasDetails = Boolean(normalizedDocName || normalizedPurpose);
+      const matchesDetails = hasDetails &&
+        (!normalizedDocName || record?.docName === normalizedDocName) &&
+        (!normalizedPurpose || record?.purpose === normalizedPurpose);
+      return Boolean(matchesId || matchesDetails);
+    })
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    )[0] || null;
+}
+
+async function findLinkedRequestForTransaction(user, transaction) {
+  if (!transaction) return null;
+  return findLatestRequestForUser(user, {
+    requestId: getStoredRequestId(transaction),
+    docName: firstNonEmptyString(
+      transaction.docName,
+      transaction.documentName,
+      transaction.documentType,
+      transaction.title,
+    ),
+    purpose: transaction.purpose,
+  });
+}
+
+function requestMatchesTransaction(request, transaction) {
+  if (!request || !transaction) return false;
+  const transactionRequestId = getStoredRequestId(transaction);
+  if (transactionRequestId) {
+    const requestIdentifiers = [
+      request._id,
+      request.id,
+      request.requestId,
+      request.request_id,
+      request.linkedRequestId,
+    ].map((value) => firstNonEmptyString(value));
+    if (requestIdentifiers.includes(transactionRequestId)) return true;
+  }
+
+  const transactionDocName = firstNonEmptyString(
+    transaction.docName,
+    transaction.documentName,
+    transaction.documentType,
+    transaction.title,
+  );
+  const requestDocName = firstNonEmptyString(
+    request.docName,
+    request.documentType,
+  );
+  const transactionPurpose = firstNonEmptyString(transaction.purpose);
+  const requestPurpose = firstNonEmptyString(request.purpose);
+  const hasDetails = Boolean(transactionDocName || transactionPurpose);
+  return hasDetails &&
+    (!transactionDocName || transactionDocName === requestDocName) &&
+    (!transactionPurpose || transactionPurpose === requestPurpose);
+}
+
+async function findLinkedRequestsForTransactions(user, transactionRecords) {
+  if (!Array.isArray(transactionRecords) || transactionRecords.length === 0) {
+    return [];
+  }
+
+  let candidates;
+  if (dbEnabled) {
+    const ownerClauses = buildMongoOwnerClauses(user);
+    if (ownerClauses.length === 0) {
+      return transactionRecords.map(() => null);
+    }
+
+    const matchClauses = [];
+    for (const transaction of transactionRecords) {
+      const requestId = getStoredRequestId(transaction);
+      if (requestId) {
+        matchClauses.push(
+          { requestId },
+          { request_id: requestId },
+          { linkedRequestId: requestId },
+        );
+        if (ObjectId.isValid(requestId)) {
+          matchClauses.push({ _id: new ObjectId(requestId) });
+        }
+      }
+
+      const docName = firstNonEmptyString(
+        transaction.docName,
+        transaction.documentName,
+        transaction.documentType,
+        transaction.title,
+      );
+      const purpose = firstNonEmptyString(transaction.purpose);
+      if (docName || purpose) {
+        const details = [];
+        if (docName) {
+          details.push({ $or: [{ docName }, { documentType: docName }] });
+        }
+        if (purpose) details.push({ purpose });
+        matchClauses.push(details.length === 1 ? details[0] : { $and: details });
+      }
+    }
+
+    if (matchClauses.length === 0) {
+      return transactionRecords.map(() => null);
+    }
+    candidates = await requests
+      .find({ $and: [{ $or: ownerClauses }, { $or: matchClauses }] })
+      .sort({ createdAt: -1 })
+      .toArray();
+  } else {
+    candidates = [...memoryRequests]
+      .filter((record) => recordBelongsToUser(record, user))
+      .sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
+  }
+
+  return transactionRecords.map(
+    (transaction) =>
+      candidates.find((request) =>
+        requestMatchesTransaction(request, transaction)) || null,
+  );
 }
 
 async function findLatestReceiptForUser(user, { docName, purpose }) {
@@ -998,18 +1412,120 @@ async function listTransactionsForUser(user, limit) {
     .slice(0, safeLimit);
 }
 
-function buildTransactionResponse(record) {
+async function listRefundsForUser(user, limit = 200) {
+  const safeLimit = Math.min(toPositiveNumber(limit, 200), 500);
+  if (dbEnabled) {
+    const ownerClauses = buildMongoOwnerClauses(user);
+    if (ownerClauses.length === 0) return [];
+    return refunds
+      .find({ $or: ownerClauses })
+      .sort({ createdAt: -1 })
+      .limit(safeLimit)
+      .toArray();
+  }
+
+  return memoryRefunds
+    .filter((record) => recordBelongsToUser(record, user))
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    )
+    .slice(0, safeLimit);
+}
+
+function refundMatchesTransaction(refund, transaction) {
+  const refundTransactionId = firstNonEmptyString(refund?.transactionId);
+  const transactionIds = [
+    transaction?._id,
+    transaction?.id,
+    transaction?.transactionId,
+  ].map((value) => firstNonEmptyString(value));
+  if (refundTransactionId && transactionIds.includes(refundTransactionId)) {
+    return true;
+  }
+
+  const refundRequestId = firstNonEmptyString(refund?.requestId);
+  return Boolean(
+    refundRequestId && refundRequestId === getStoredRequestId(transaction),
+  );
+}
+
+function buildRefundResponse(record) {
   if (!record) return null;
   const id = record._id || record.id;
   return {
     id: id ? String(id) : '',
-    docName: record.docName || record.documentName || record.title || '',
-    purpose: record.purpose || '',
-    status: record.status || record.state || 'completed',
+    transactionId: firstNonEmptyString(record.transactionId),
+    requestId: firstNonEmptyString(record.requestId),
+    docName: firstNonEmptyString(record.docName),
+    amount: record.amount ?? null,
+    paymentType: firstNonEmptyString(record.paymentType),
+    refundMethod: firstNonEmptyString(record.refundMethod),
+    reason: firstNonEmptyString(record.reason),
+    rejectionRemarks: firstNonEmptyString(record.rejectionRemarks),
+    status: firstNonEmptyString(record.status, 'pending'),
+    createdAt: record.createdAt || new Date().toISOString(),
+    updatedAt: record.updatedAt || record.createdAt || new Date().toISOString(),
+  };
+}
+
+function buildTransactionResponse(
+  record,
+  linkedRequest = null,
+  refundRecord = null,
+) {
+  if (!record) return null;
+  const id = record._id || record.id || record.transactionId;
+  const transactionId = firstNonEmptyString(record.transactionId, id);
+  const requestId = firstNonEmptyString(
+    linkedRequest && getRequestResponseId(linkedRequest),
+    getStoredRequestId(record),
+  );
+  const status = firstNonEmptyString(
+    resolveWorkflowStatus(record, { linkedRecord: linkedRequest }),
+    'completed',
+  );
+  const remarks = getRecordRemarks(record, linkedRequest);
+  const paymentType = firstNonEmptyString(
+    record.paymentType,
+    record.paymentMode,
+  );
+  const totalAmount =
+    record.totalAmount ?? record.amount ?? record.originalAmount ?? null;
+  const refund = buildRefundGuidance({
+    status,
+    amount: totalAmount,
+    paymentType,
+    refundStatus: refundRecord?.status || record.refundStatus,
+    refundRequestedAt: refundRecord?.createdAt || record.refundRequestedAt,
+  });
+  return {
+    id: id ? String(id) : '',
+    transactionId,
+    requestId,
+    linkedRequestId: requestId,
+    docName: firstNonEmptyString(
+      record.docName,
+      record.documentName,
+      record.documentType,
+      record.title,
+      linkedRequest?.docName,
+      linkedRequest?.documentType,
+    ),
+    purpose: firstNonEmptyString(record.purpose, linkedRequest?.purpose),
+    status,
     createdAt: record.createdAt || record.date || new Date().toISOString(),
-    paymentType: record.paymentType || record.paymentMode || '',
-    totalAmount: record.totalAmount ?? record.amount ?? null,
-    refundStatus: record.refundStatus || '',
+    paymentType,
+    totalAmount,
+    remarks,
+    remark: remarks,
+    rejectionReason: remarks,
+    ...refund,
+    refundId: firstNonEmptyString(refundRecord?._id, refundRecord?.id),
+    refundUpdatedAt: firstNonEmptyString(
+      refundRecord?.updatedAt,
+      refundRecord?.createdAt,
+    ),
     email: record.email || '',
     userId: record.userId ? String(record.userId) : '',
   };
@@ -1037,11 +1553,7 @@ async function findTransactionForUser(user, transactionId) {
   if ((!userId && !email) || !transactionId) return null;
 
   if (dbEnabled) {
-    const ownerClauses = [];
-    if (userId && ObjectId.isValid(String(userId))) {
-      ownerClauses.push({ userId: new ObjectId(String(userId)) });
-    }
-    if (emailRegex.test(email)) ownerClauses.push({ email });
+    const ownerClauses = buildMongoOwnerClauses(user);
     if (ownerClauses.length === 0) return null;
 
     const idClauses = [{ id: transactionId }, { transactionId }];
@@ -1054,29 +1566,38 @@ async function findTransactionForUser(user, transactionId) {
   }
 
   return memoryTransactions.find((record) => {
-    const recordId = String(record._id || record.id || record.transactionId || '');
+    const recordIds = [record._id, record.id, record.transactionId]
+      .map((value) => firstNonEmptyString(value));
     const ownsRecord =
       (userId && String(record.userId) === String(userId)) ||
       (email && normalizeEmail(record.email) === email);
-    return ownsRecord && recordId === transactionId;
+    return ownsRecord && recordIds.includes(transactionId);
   }) || null;
 }
 
-async function findRefundForTransaction(user, transactionId) {
+async function findRefundForTransaction(user, transactionId, transaction = null) {
   const userId = user?._id || user?.id;
   const email = normalizeEmail(user?.email);
+  const transactionIds = [
+    transactionId,
+    transaction?._id,
+    transaction?.id,
+    transaction?.transactionId,
+  ]
+    .map((value) => firstNonEmptyString(value))
+    .filter((value, index, values) => value && values.indexOf(value) === index);
+  if (transactionIds.length === 0) return null;
   if (dbEnabled) {
-    const ownerClauses = [];
-    if (userId && ObjectId.isValid(String(userId))) {
-      ownerClauses.push({ userId: new ObjectId(String(userId)) });
-    }
-    if (emailRegex.test(email)) ownerClauses.push({ email });
+    const ownerClauses = buildMongoOwnerClauses(user);
     if (ownerClauses.length === 0) return null;
-    return refunds.findOne({ transactionId, $or: ownerClauses });
+    return refunds.findOne({
+      transactionId: { $in: transactionIds },
+      $or: ownerClauses,
+    });
   }
 
   return memoryRefunds.find((record) =>
-    record.transactionId === transactionId &&
+    transactionIds.includes(firstNonEmptyString(record.transactionId)) &&
     ((userId && String(record.userId) === String(userId)) ||
       (email && normalizeEmail(record.email) === email))
   ) || null;
@@ -1085,10 +1606,34 @@ async function findRefundForTransaction(user, transactionId) {
 async function createRefundRecord(record, transaction) {
   if (dbEnabled) {
     const result = await refunds.insertOne(record);
+    const refundUpdates = {
+      refundStatus: 'pending',
+      refundRequestedAt: record.createdAt,
+    };
     await transactions.updateOne(
       { _id: transaction._id },
-      { $set: { refundStatus: 'pending', refundRequestedAt: record.createdAt } },
+      { $set: refundUpdates },
     );
+    if (record.requestId) {
+      const requestIdentifiers = [
+        { requestId: record.requestId },
+        { request_id: record.requestId },
+        { linkedRequestId: record.requestId },
+      ];
+      if (ObjectId.isValid(record.requestId)) {
+        requestIdentifiers.push({ _id: new ObjectId(record.requestId) });
+      }
+      const requestOwners = buildMongoOwnerClauses({
+        _id: record.userId,
+        email: record.email,
+      });
+      await requests.updateOne(
+        requestOwners.length > 0
+          ? { $and: [{ $or: requestOwners }, { $or: requestIdentifiers }] }
+          : { $or: requestIdentifiers },
+        { $set: refundUpdates },
+      );
+    }
     return result.insertedId;
   }
 
@@ -1101,6 +1646,31 @@ async function createRefundRecord(record, transaction) {
       refundStatus: 'pending',
       refundRequestedAt: record.createdAt,
     };
+  }
+  if (record.requestId) {
+    const requestIndex = memoryRequests.findIndex((request) => {
+      const ownsRequest =
+        (record.userId &&
+          String(request.userId || '') === String(record.userId)) ||
+        (record.email &&
+          normalizeEmail(request.email) === normalizeEmail(record.email));
+      return ownsRequest && [
+          request._id,
+          request.id,
+          request.requestId,
+          request.request_id,
+          request.linkedRequestId,
+        ]
+          .map((value) => firstNonEmptyString(value))
+          .includes(record.requestId);
+    });
+    if (requestIndex >= 0) {
+      memoryRequests[requestIndex] = {
+        ...memoryRequests[requestIndex],
+        refundStatus: 'pending',
+        refundRequestedAt: record.createdAt,
+      };
+    }
   }
   return id;
 }
@@ -1151,7 +1721,8 @@ async function updateRequestStatusForPayment({
 function buildRequestResponse(record) {
   if (!record) return null;
   const id = record._id || record.id;
-  const mappedPrice = getDocumentPrice(record.docName);
+  const docName = firstNonEmptyString(record.docName, record.documentType);
+  const mappedPrice = getDocumentPrice(docName);
   const storedPrice = record.documentPrice;
   const documentPrice =
     storedPrice == null || storedPrice === defaultDocumentPrice
@@ -1165,16 +1736,36 @@ function buildRequestResponse(record) {
     record.totalAmount,
     documentPrice + processingFee,
   );
+  const requestId = getRequestResponseId(record);
+  const status = firstNonEmptyString(
+    resolveWorkflowStatus(record, { preferMobile: true }),
+    'pending',
+  );
+  const remarks = getRecordRemarks(record);
+  const paymentType = firstNonEmptyString(
+    record.paymentType,
+    record.paymentMode,
+  );
+  const refund = buildRefundGuidance({
+    status,
+    amount: totalAmount,
+    paymentType,
+    refundStatus: record.refundStatus,
+    refundRequestedAt: record.refundRequestedAt,
+  });
+  const role = record.role ? normalizeRole(record.role) : '';
   return {
     id: id ? String(id) : '',
-    requestId: record.requestId ? String(record.requestId) : '',
-    docName: record.docName || '',
+    requestId,
+    linkedRequestId: requestId,
+    docName,
     purpose: record.purpose || '',
-    status: record.mobileStatus || record.status || 'pending',
+    status,
     createdAt: record.createdAt || new Date().toISOString(),
     updatedAt: record.updatedAt || record.createdAt || new Date().toISOString(),
     email: record.email || '',
-    role: record.role || '',
+    role,
+    roleLabel: role ? getRequesterRoleLabel(role) : '',
     schoolEmail: record.schoolEmail || '',
     studentId: record.studentId || '',
     yearGraduated: record.yearGraduated || '',
@@ -1183,6 +1774,11 @@ function buildRequestResponse(record) {
     documentPrice,
     processingFee,
     totalAmount,
+    paymentType,
+    remarks,
+    remark: remarks,
+    rejectionReason: remarks,
+    ...refund,
   };
 }
 
@@ -1191,31 +1787,55 @@ function parseStatusFilter(value) {
   return String(value)
     .split(',')
     .map((status) => status.trim().toLowerCase())
-    .filter(Boolean);
+    .filter((status) => status && status.length <= 50)
+    .slice(0, 20);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function listRequestsForUser(user, statuses) {
   const userId = user?._id || user?.id;
-  if (!userId) return [];
+  const email = normalizeEmail(user?.email);
+  if (!userId && !email) return [];
 
   if (dbEnabled) {
-    const query = { userId };
+    const ownerClauses = buildMongoOwnerClauses(user);
+    if (ownerClauses.length === 0) return [];
+    const queryClauses = [{ $or: ownerClauses }];
     if (statuses && statuses.length > 0) {
-      const regexes = statuses.map((s) => new RegExp(`^${s}$`, 'i'));
-      query.$or = [{ status: { $in: regexes } }, { mobileStatus: { $in: regexes } }];
+      const regexes = statuses.map(
+        (status) => new RegExp(`^${escapeRegExp(status)}$`, 'i'),
+      );
+      queryClauses.push({
+        $or: [
+          { status: { $in: regexes } },
+          { state: { $in: regexes } },
+          { mobileStatus: { $in: regexes } },
+          { requestStatus: { $in: regexes } },
+        ],
+      });
     }
-    return requests.find(query).sort({ createdAt: -1 }).toArray();
+    return requests
+      .find(queryClauses.length === 1 ? queryClauses[0] : { $and: queryClauses })
+      .sort({ createdAt: -1 })
+      .toArray();
   }
 
-  const userIdValue = String(userId);
   let items = memoryRequests.filter(
-    (record) => String(record.userId) === userIdValue,
+    (record) => recordBelongsToUser(record, user),
   );
   if (statuses && statuses.length > 0) {
-    items = items.filter((record) =>
-      statuses.includes(String(record.status || '').toLowerCase()) ||
-      statuses.includes(String(record.mobileStatus || '').toLowerCase())
-    );
+    items = items.filter((record) => {
+      const recordStatuses = [
+        record.status,
+        record.state,
+        record.mobileStatus,
+        record.requestStatus,
+      ].map((status) => String(status || '').trim().toLowerCase());
+      return recordStatuses.some((status) => statuses.includes(status));
+    });
   }
   return items.sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
@@ -1464,7 +2084,10 @@ function validateRegisterPayload(body) {
   const email = isStudent ? schoolEmail : personalEmail;
 
   if (!role) {
-    return { error: 'Please select Former student or Alumni.' };
+    return {
+      error:
+        "Please select Former/stopped student, Alumni, Master's, or Doctorate.",
+    };
   }
 
   if (firstName.length < 2 || firstName.length > 50 ||
@@ -1631,16 +2254,13 @@ app.post(
       const amount = toNonNegativeNumber(req.body?.amount, 0);
       const status = String(req.body?.status || 'pending_completion').trim();
 
-      let trueRequestId = purpose;
-      if (dbEnabled) {
-        const reqRecord = await requests.findOne(
-          { userId: new ObjectId(String(user._id || user.id)), docName, purpose },
-          { sort: { createdAt: -1 } }
-        );
-        if (reqRecord && reqRecord.requestId) {
-          trueRequestId = reqRecord.requestId;
-        }
-      }
+      const linkedRequest = await findLatestRequestForUser(user, {
+        docName,
+        purpose,
+      });
+      const trueRequestId = linkedRequest
+        ? getRequestResponseId(linkedRequest)
+        : '';
 
       const uploadResult = await uploadReceiptToCloudinary(req.file);
       const receipt = buildReceiptRecord({
@@ -1751,7 +2371,8 @@ app.post('/requests', requireAuth, async (req, res, next) => {
       // Legacy mobile fields
       userId: user._id || user.id,
       email: user.email,
-      role: user.role || '',
+      role: normalizeRole(user.role),
+      roleLabel: getRequesterRoleLabel(user.role),
       firstName: user.firstName || '',
       lastName: user.lastName || '',
       personalEmail: user.personalEmail || user.email || '',
@@ -1902,9 +2523,39 @@ app.get('/transactions', requireAuth, async (req, res, next) => {
     }
 
     const records = await listTransactionsForUser(user, req.query?.limit);
+    const [linkedRequests, refundRecords] = await Promise.all([
+      findLinkedRequestsForTransactions(user, records),
+      listRefundsForUser(user),
+    ]);
     return res.json({
       success: true,
-      transactions: records.map(buildTransactionResponse).filter(Boolean),
+      transactions: records
+        .map((record, index) => buildTransactionResponse(
+          record,
+          linkedRequests[index],
+          refundRecords.find((refund) =>
+            refundMatchesTransaction(refund, record)) || null,
+        ))
+        .filter(Boolean),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.get('/refunds', requireAuth, async (req, res, next) => {
+  try {
+    const user = await getUserFromAuth(req.auth);
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'User not found.' });
+    }
+
+    const records = await listRefundsForUser(user, req.query?.limit);
+    return res.json({
+      success: true,
+      refunds: records.map(buildRefundResponse).filter(Boolean),
     });
   } catch (error) {
     return next(error);
@@ -1930,10 +2581,10 @@ app.post('/refunds', requireAuth, async (req, res, next) => {
     const bankName = String(req.body?.bankName || '').trim();
     const reason = String(req.body?.reason || '').trim();
 
-    if (!transactionId) {
+    if (!transactionId || transactionId.length > 200) {
       return res.status(400).json({
         success: false,
-        message: 'Transaction is required.',
+        message: 'A valid transaction is required.',
       });
     }
     if (!['gcash', 'bank_transfer'].includes(refundMethod)) {
@@ -1942,10 +2593,10 @@ app.post('/refunds', requireAuth, async (req, res, next) => {
         message: 'Choose a valid refund method.',
       });
     }
-    if (accountName.length < 2) {
+    if (accountName.length < 2 || accountName.length > 100) {
       return res.status(400).json({
         success: false,
-        message: 'Enter the account holder name.',
+        message: 'Enter a valid account holder name.',
       });
     }
     if (refundMethod === 'gcash' && !/^09\d{9}$/.test(accountNumber)) {
@@ -1955,10 +2606,17 @@ app.post('/refunds', requireAuth, async (req, res, next) => {
       });
     }
     if (refundMethod === 'bank_transfer' &&
-        (!bankName || accountNumber.length < 6 || accountNumber.length > 30)) {
+        (!bankName || bankName.length > 100 ||
+          accountNumber.length < 6 || accountNumber.length > 30)) {
       return res.status(400).json({
         success: false,
         message: 'Enter valid bank account details.',
+      });
+    }
+    if (reason.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refund reason must be 500 characters or fewer.',
       });
     }
 
@@ -1970,18 +2628,23 @@ app.post('/refunds', requireAuth, async (req, res, next) => {
       });
     }
 
-    const transactionStatus = String(
-      transaction.status || transaction.state || '',
-    ).trim().toLowerCase();
+    const linkedRequest = await findLinkedRequestForTransaction(
+      user,
+      transaction,
+    );
+    const transactionStatus = resolveWorkflowStatus(transaction, {
+      linkedRecord: linkedRequest,
+    });
     const amount = toNonNegativeNumber(
-      transaction.totalAmount ?? transaction.amount,
+      transaction.totalAmount ?? transaction.amount ?? transaction.originalAmount,
       0,
     );
-    const paymentType = String(
-      transaction.paymentType || transaction.paymentMode || '',
-    ).trim();
+    const paymentType = firstNonEmptyString(
+      transaction.paymentType,
+      transaction.paymentMode,
+    );
 
-    if (transactionStatus !== 'rejected') {
+    if (!isRejectedWorkflowStatus(transactionStatus)) {
       return res.status(409).json({
         success: false,
         message: 'Only rejected requests can be refunded.',
@@ -1994,18 +2657,36 @@ app.post('/refunds', requireAuth, async (req, res, next) => {
       });
     }
 
-    const existingRefund = await findRefundForTransaction(user, transactionId);
+    const existingRefund = await findRefundForTransaction(
+      user,
+      transactionId,
+      transaction,
+    );
     if (existingRefund) {
       return res.status(409).json({
         success: false,
         message: 'A refund has already been requested for this payment.',
         refundStatus: existingRefund.status || 'pending',
+        refundInstructions:
+          'You will receive a notification when the refund status changes.',
       });
     }
 
     const createdAt = new Date().toISOString();
-    const refundRecord = {
+    const canonicalTransactionId = firstNonEmptyString(
+      transaction._id,
+      transaction.id,
+      transaction.transactionId,
       transactionId,
+    );
+    const linkedRequestId = firstNonEmptyString(
+      linkedRequest && getRequestResponseId(linkedRequest),
+      getStoredRequestId(transaction),
+    );
+    const rejectionRemarks = getRecordRemarks(transaction, linkedRequest);
+    const refundRecord = {
+      transactionId: canonicalTransactionId,
+      requestId: linkedRequestId,
       userId: user._id || user.id,
       email: normalizeEmail(user.email),
       docName: transaction.docName || transaction.documentName ||
@@ -2017,6 +2698,7 @@ app.post('/refunds', requireAuth, async (req, res, next) => {
       accountNumber,
       bankName: refundMethod === 'bank_transfer' ? bankName : '',
       reason: reason || 'Document request was rejected.',
+      rejectionRemarks,
       status: 'pending',
       createdAt,
       updatedAt: createdAt,
@@ -2037,6 +2719,9 @@ app.post('/refunds', requireAuth, async (req, res, next) => {
       refundId: String(refundId),
       refundStatus: 'pending',
       message: 'Your refund request has been submitted.',
+      refundInstructions:
+        'The office will review your refund details. You will receive a ' +
+        'notification when the refund status changes.',
     });
   } catch (error) {
     return next(error);

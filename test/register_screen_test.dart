@@ -28,13 +28,14 @@ Future<void> _selectAccountType(
 }
 
 void main() {
-  testWidgets('account type offers only former student and alumni',
+  testWidgets('requester type includes stopped, alumni, masters and doctorate',
       (tester) async {
     await _pumpRegister(tester, const Size(412, 915));
 
     expect(find.text('Current student'), findsNothing);
+    expect(find.byKey(const Key('registration_back_button')), findsOneWidget);
 
-    await _selectAccountType(tester, 'Former student');
+    await _selectAccountType(tester, 'Former / stopped student');
     expect(find.text('Year Last Attended'), findsOneWidget);
     expect(find.text('Student ID'), findsNothing);
     expect(find.text('School email'), findsNothing);
@@ -43,6 +44,34 @@ void main() {
     expect(find.text('Year Graduated'), findsOneWidget);
     expect(find.text('Student ID'), findsNothing);
     expect(find.text('School email'), findsNothing);
+
+    await _selectAccountType(tester, "Master's");
+    expect(
+      tester
+          .state<FormFieldState<String>>(
+            find.byKey(const Key('account_type_field')),
+          )
+          .value,
+      'masters',
+    );
+    expect(find.text('Year Graduated / Last Attended'), findsOneWidget);
+    expect(
+      find.byKey(const Key('postgraduate_program_field')),
+      findsOneWidget,
+    );
+    expect(find.text("Master's Program"), findsOneWidget);
+
+    await _selectAccountType(tester, 'Doctorate');
+    expect(
+      tester
+          .state<FormFieldState<String>>(
+            find.byKey(const Key('account_type_field')),
+          )
+          .value,
+      'doctorate',
+    );
+    expect(find.text('Year Graduated / Last Attended'), findsOneWidget);
+    expect(find.text('Doctorate Program'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

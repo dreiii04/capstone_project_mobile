@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:capstone_project/models/profile_data.dart';
 import 'package:capstone_project/services/mongo_data_api_service.dart';
+import 'package:capstone_project/widgets/profile_avatar.dart';
 import 'package:capstone_project/widgets/simple_message_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -54,14 +55,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   bool get _hasChanges {
     final profile = widget.profile;
+    final accountFieldsChanged = profile.isCurrentStudent
+        ? _studentIdController.text.trim() != profile.studentId.trim() ||
+            _schoolEmailController.text.trim() != profile.schoolEmail.trim()
+        : _personalEmailController.text.trim() != profile.personalEmail.trim();
     return _image != null ||
         _firstNameController.text.trim() != profile.firstName.trim() ||
         _lastNameController.text.trim() != profile.lastName.trim() ||
-        _studentIdController.text.trim() != profile.studentId.trim() ||
         _yearLevelController.text.trim() != profile.yearLevel.trim() ||
         _programController.text.trim() != profile.program.trim() ||
-        _schoolEmailController.text.trim() != profile.schoolEmail.trim() ||
-        _personalEmailController.text.trim() != profile.personalEmail.trim() ||
+        accountFieldsChanged ||
         _passController.text.isNotEmpty ||
         _confirmPassController.text.isNotEmpty;
   }
@@ -159,11 +162,17 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final updated = ProfileData(
       firstName: _firstNameController.text.trim(),
       lastName: _lastNameController.text.trim(),
-      studentId: _studentIdController.text.trim(),
+      studentId: widget.profile.isCurrentStudent
+          ? _studentIdController.text.trim()
+          : '',
       yearLevel: _yearLevelController.text.trim(),
       program: _programController.text.trim(),
-      schoolEmail: _schoolEmailController.text.trim(),
-      personalEmail: _personalEmailController.text.trim(),
+      schoolEmail: widget.profile.usesSchoolLogin
+          ? _schoolEmailController.text.trim()
+          : '',
+      personalEmail: widget.profile.usesSchoolLogin
+          ? ''
+          : _personalEmailController.text.trim(),
       role: widget.profile.role,
     );
 
@@ -216,6 +225,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         foregroundColor: Colors.white,
         elevation: 0,
         centerTitle: true,
+        leading: IconButton(
+          key: const Key('edit_profile_back_button'),
+          tooltip: 'Back to profile',
+          onPressed: () => Navigator.maybePop(context),
+          icon: const Icon(Icons.arrow_back_rounded),
+        ),
         title: const Text(
           'Edit profile',
           style: TextStyle(fontWeight: FontWeight.w700),
@@ -294,17 +309,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       color: Colors.white,
                       shape: BoxShape.circle,
                     ),
-                    child: CircleAvatar(
-                      radius: 42,
+                    child: ProfileAvatar(
+                      size: 84,
                       backgroundColor: const Color(0xFFE8EFF3),
-                      backgroundImage: _avatarImage,
-                      child: _avatarImage == null
-                          ? const Icon(
-                              Icons.person_rounded,
-                              size: 46,
-                              color: _primaryBlue,
-                            )
-                          : null,
+                      iconColor: _primaryBlue,
+                      iconSize: 46,
+                      imageUrl: _image == null ? _profileImageUrl : '',
+                      imageProvider: _image == null ? null : FileImage(_image!),
+                      semanticLabel: 'Current profile photo',
                     ),
                   ),
                   Positioned(
@@ -371,24 +383,64 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     );
   }
 
-  ImageProvider<Object>? get _avatarImage {
-    if (_image != null) return FileImage(_image!);
-    if (_profileImageUrl.isEmpty) return null;
-    if (_profileImageUrl.startsWith('http')) {
-      return NetworkImage(_profileImageUrl);
-    }
-    final file = File(_profileImageUrl);
-    return file.existsSync() ? FileImage(file) : null;
-  }
-
   Widget _buildPersonalInformationCard() {
-    final isPastStudent = widget.profile.isPastStudent;
+    final profile = widget.profile;
     return _buildSectionCard(
       icon: Icons.badge_outlined,
       title: 'Personal information',
-      subtitle: 'Keep your details accurate so we can identify your requests.',
+      subtitle: 'Fields are tailored to your account type.',
       child: Column(
         children: [
+          Container(
+            key: const Key('edit_profile_account_type'),
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEAF1F5),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFD7E3EA)),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.account_circle_outlined,
+                  color: _primaryBlue,
+                  size: 22,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Account type',
+                        style: TextStyle(
+                          color: Color(0xFF687680),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        profile.roleLabel,
+                        style: const TextStyle(
+                          color: _darkNavy,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(
+                  Icons.lock_outline_rounded,
+                  color: Color(0xFF7B8992),
+                  size: 18,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
           _buildResponsivePair(
             _buildTextField(
               controller: _firstNameController,
@@ -407,9 +459,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               autofillHints: const [AutofillHints.familyName],
             ),
           ),
-          if (!isPastStudent) ...[
+          if (profile.isCurrentStudent) ...[
             const SizedBox(height: 14),
             _buildTextField(
+              fieldKey: const Key('edit_student_id_field'),
               controller: _studentIdController,
               label: 'Student ID',
               icon: Icons.credit_card_rounded,
@@ -419,42 +472,46 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           const SizedBox(height: 14),
           _buildResponsivePair(
             _buildTextField(
+              fieldKey: const Key('edit_academic_year_field'),
               controller: _yearLevelController,
-              label: isPastStudent
-                  ? 'Year graduated / last attended'
-                  : 'Year level',
+              label: profile.academicYearLabel,
               icon: Icons.calendar_today_outlined,
-              hint: isPastStudent ? 'e.g. 2025' : 'e.g. 4th Year',
+              hint: profile.academicYearHint,
             ),
             _buildTextField(
+              fieldKey: const Key('edit_program_field'),
               controller: _programController,
-              label: 'Program',
+              label: profile.programLabel,
               icon: Icons.school_outlined,
-              hint: 'e.g. BS Information Technology',
+              hint: profile.programHint,
               textCapitalization: TextCapitalization.words,
             ),
           ),
-          if (!isPastStudent) ...[
+          if (profile.usesSchoolLogin) ...[
             const SizedBox(height: 14),
             _buildTextField(
+              fieldKey: const Key('edit_school_login_email_field'),
               controller: _schoolEmailController,
-              label: 'School email',
+              label: 'School / login email',
               icon: Icons.alternate_email_rounded,
               keyboardType: TextInputType.emailAddress,
-              validator: _validateEmail,
+              validator: (value) => _validateEmail(value, required: true),
               autofillHints: const [AutofillHints.email],
+              helper: 'You will use this school email to sign in.',
+            ),
+          ] else ...[
+            const SizedBox(height: 14),
+            _buildTextField(
+              fieldKey: const Key('edit_login_email_field'),
+              controller: _personalEmailController,
+              label: 'Login email',
+              icon: Icons.mail_outline_rounded,
+              keyboardType: TextInputType.emailAddress,
+              validator: (value) => _validateEmail(value, required: true),
+              autofillHints: const [AutofillHints.email],
+              helper: 'You will use this email to sign in.',
             ),
           ],
-          const SizedBox(height: 14),
-          _buildTextField(
-            controller: _personalEmailController,
-            label: 'Login email',
-            icon: Icons.mail_outline_rounded,
-            keyboardType: TextInputType.emailAddress,
-            validator: (value) => _validateEmail(value, required: true),
-            autofillHints: const [AutofillHints.email],
-            helper: 'You will use this email to sign in.',
-          ),
         ],
       ),
     );
@@ -590,6 +647,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   Widget _buildTextField({
+    Key? fieldKey,
     required TextEditingController controller,
     required String label,
     required IconData icon,
@@ -605,6 +663,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     ValueChanged<String>? onFieldSubmitted,
   }) {
     return TextFormField(
+      key: fieldKey,
       controller: controller,
       validator: validator,
       keyboardType: keyboardType,
@@ -669,6 +728,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           border: Border(top: BorderSide(color: Color(0xFFE2E8EC))),
         ),
         child: Center(
+          // A bottom bar receives the full page height as a loose constraint.
+          // Shrink-wrap it so it cannot cover the app bar and form.
+          heightFactor: 1,
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 720),
             child: SizedBox(
@@ -696,13 +758,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           color: Colors.white,
                         ),
                       )
-                    : Icon(_hasChanges ? Icons.check_rounded : Icons.done_all),
+                    : const Icon(Icons.save_outlined),
                 label: Text(
-                  _isSaving
-                      ? 'Saving changes...'
-                      : _hasChanges
-                          ? 'Save changes'
-                          : 'No changes to save',
+                  _isSaving ? 'Saving changes...' : 'Save changes',
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
