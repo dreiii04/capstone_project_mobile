@@ -1,345 +1,126 @@
 import bcrypt from 'bcryptjs';
-import { v2 as cloudinary } from 'cloudinary';
-import { createHash, randomBytes, randomInt } from 'crypto';
-import cors from 'cors';
-import dotenv from 'dotenv';
+import {
+  createHash,
+  randomBytes,
+} from 'crypto';
 import express from 'express';
-import fs from 'fs';
-import rateLimit from 'express-rate-limit';
-import helmet from 'helmet';
 import jwt from 'jsonwebtoken';
-import { MongoClient, ObjectId } from 'mongodb';
-import multer from 'multer';
-import nodemailer from 'nodemailer';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { ObjectId } from 'mongodb';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
-dotenv.config(); // Also try default .env in case of Vercel env vars
+import config, { refreshConfig } from './components/config/config.js';
+import {
+  dummyPasswordHash,
+  emailRegex,
+  passwordRegex,
+  personNameRegex,
+  refundStatusAliases,
+  studentIdRegex,
+  studentYearLevels,
+  terminalWorkflowStatuses,
+} from './components/config/constants.js';
+import {
+  alumniUsers,
+  client,
+  dbEnabled,
+  notifications,
+  receipts,
+  refunds,
+  requests,
+  studentUsers,
+  transactions,
+} from './components/config/db.js';
+import { initializeDatabase } from './components/config/database-startup.js';
+import { healthCheck } from './components/controllers/system.controller.js';
+import { applyAppMiddleware } from './components/middleware/app.middleware.js';
+import {
+  requireAuth,
+  requireNotificationSender,
+} from './components/middleware/auth.middleware.js';
+import {
+  errorHandler,
+  notFoundHandler,
+} from './components/middleware/error.middleware.js';
+import {
+  loginLimiter,
+  otpRequestLimiter,
+  otpVerifyLimiter,
+  uploadLimiter,
+  writeLimiter,
+} from './components/middleware/rate-limit.middleware.js';
+import {
+  profileUpload,
+  receiptUpload,
+  validateUploadedImage,
+} from './components/middleware/upload.middleware.js';
+import {
+  defaultDocumentPrice,
+  defaultProcessingFee,
+  getDocumentPrice,
+} from './components/models/document.model.js';
+import {
+  memoryNotifications,
+  memoryReceipts,
+  memoryRefunds,
+  memoryRequests,
+  memoryTransactions,
+  memoryUsers,
+  otpStore,
+  registrationOtpStore,
+  resetTokenStore,
+} from './components/models/memory-store.js';
+import {
+  buildProfileResponse,
+  buildUserResponse,
+  normalizeRole,
+  parseRegistrationRole,
+  requesterRoleLabel as getRequesterRoleLabel,
+} from './components/models/user.model.js';
+import {
+  challengeTokenMatches,
+  cleanupOtpData,
+  consumeChallenge,
+  getChallenge,
+  hashChallenge,
+  hashChallengeToken,
+  makeChallengeToken,
+  makeResetToken,
+  otpMatches,
+  otpTtlMinutes,
+  putOtp,
+  recordFailedChallengeAttempt,
+  setChallenge,
+} from './components/services/challenge.service.js';
+import {
+  sendOtpEmail,
+  sendOtpResponse,
+} from './components/services/mail.service.js';
+import {
+  deleteUploadedReceipt,
+  initializeMediaStorage,
+  uploadProfilePhoto,
+  uploadReceipt,
+} from './components/services/media.service.js';
+
+refreshConfig();
 
 const {
-  PORT = '4000',
-  DISABLE_DB = 'false',
-  MONGODB_URI = '',
-  MONGODB_DB_NAME = 'test',
-  MONGODB_USERS_COLLECTION = 'users',
-  MONGODB_STUDENTS_COLLECTION = 'students',
-  MONGODB_ALUMNI_COLLECTION = 'alumni',
-  ALLOWED_ORIGIN = '*',
-  MAILBOXLAYER_ACCESS_KEY = '',
-  OTP_TTL_MINUTES = '10',
-  OTP_DEV_MODE = 'false',
-  JWT_SECRET = '',
-  JWT_ACCESS_TTL_MINUTES = '15',
-  JWT_REFRESH_TTL_DAYS = '30',
-  JWT_ISSUER = 'verifitor',
-  SMTP_HOST = 'smtp-relay.brevo.com',
-  SMTP_PORT = '587',
-  SMTP_SECURE = 'false',
-  SMTP_USER = '',
-  SMTP_PASS = '',
-  SMTP_FROM = 'Verifitor <andreisembrano8@gmail.com>',
-  NOTIFICATIONS_API_KEY = '',
-  CLOUDINARY_CLOUD_NAME = '',
-  CLOUDINARY_API_KEY = '',
-  CLOUDINARY_API_SECRET = '',
-} = process.env;
-
-const dbEnabled = DISABLE_DB !== 'true';
-const alumniCollectionName = String(
-  MONGODB_ALUMNI_COLLECTION || MONGODB_USERS_COLLECTION || 'alumni',
-);
-const studentsCollectionName = String(
-  MONGODB_STUDENTS_COLLECTION || 'students',
-);
-
-let startupError = null;
-
-if (dbEnabled && !MONGODB_URI) {
-  startupError = 'Missing MONGODB_URI in backend/.env';
-}
-
-if (!JWT_SECRET) {
-  startupError = startupError || 'Missing JWT_SECRET in backend/.env';
-}
-
-const cloudinaryEnabled = Boolean(
-  process.env.CLOUDINARY_URL || (CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET),
-);
-if (cloudinaryEnabled) {
-  if (process.env.CLOUDINARY_URL) {
-    // The Cloudinary SDK automatically picks up process.env.CLOUDINARY_URL
-    // We just need to make sure we don't override it with empty values.
-    cloudinary.config(true);
-  } else {
-    cloudinary.config({
-      cloud_name: CLOUDINARY_CLOUD_NAME,
-      api_key: CLOUDINARY_API_KEY,
-      api_secret: CLOUDINARY_API_SECRET,
-      secure: true,
-    });
-  }
-}
+  isProduction,
+  mailboxlayerAccessKey: MAILBOXLAYER_ACCESS_KEY,
+} = config;
+const jwtSecret = config.jwt.secret;
+const OTP_DEV_MODE = config.otp.developmentMode;
+const maxOtpVerificationAttempts = 5;
+initializeMediaStorage();
 
 const app = express();
-
-const uploadsDir = path.join(__dirname, '..', 'uploads');
-const receiptsDir = path.join(uploadsDir, 'receipts');
-const profilesDir = path.join(uploadsDir, 'profiles');
-try {
-  fs.mkdirSync(receiptsDir, { recursive: true });
-  fs.mkdirSync(profilesDir, { recursive: true });
-} catch (err) {
-  console.warn('Could not create upload directories (read-only filesystem):', err.message);
-}
-
-const allowedReceiptMimeTypes = new Set([
-  'image/jpeg',
-  'image/jpg',
-  'image/png',
-  'image/webp',
-  'image/heic',
-  'image/heif',
-  'image/heic-sequence',
-  'image/heif-sequence',
-]);
-const allowedImageExtensions = new Set([
-  '.jpg',
-  '.jpeg',
-  '.png',
-  '.webp',
-  '.heic',
-  '.heif',
-]);
-
-function imageFileFilter(req, file, cb) {
-  const ext = path.extname(file.originalname || '').toLowerCase();
-  if (!allowedReceiptMimeTypes.has(file.mimetype)) {
-    if (file.mimetype === 'application/octet-stream' &&
-        allowedImageExtensions.has(ext)) {
-      return cb(null, true);
-    }
-    req.fileValidationError =
-      'Only JPG, PNG, WEBP, or HEIC images are allowed.';
-    return cb(null, false);
-  }
-  return cb(null, true);
-}
-const receiptUpload = multer({
-  storage: multer.memoryStorage(),
-  fileFilter: imageFileFilter,
-  limits: {
-    fileSize: 8 * 1024 * 1024,
-  },
-});
-const profileUpload = multer({
-  storage: multer.memoryStorage(),
-  fileFilter: imageFileFilter,
-  limits: {
-    fileSize: 5 * 1024 * 1024,
-  },
-});
-
-app.use(helmet());
-app.use(
-  cors({
-    origin: ALLOWED_ORIGIN === '*' ? true : ALLOWED_ORIGIN,
-  }),
-);
-
-app.use((req, res, next) => {
-  if (startupError) {
-    return res.status(500).json({ error: startupError });
-  }
-  next();
-});
-app.use(express.json({ limit: '1mb' }));
-app.use(async (req, res, next) => {
-  try {
-    await ensureDb();
-    next();
-  } catch (err) {
-    next(err);
-  }
-});
-app.use('/uploads', express.static(uploadsDir));
-
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-app.use('/auth', authLimiter);
-
-const client = dbEnabled ? new MongoClient(MONGODB_URI) : null;
-let alumniUsers;
-let studentUsers;
-let receipts;
-let requests;
-let notifications;
-let transactions;
-let refunds;
-const memoryUsers = new Map();
-const memoryReceipts = [];
-const memoryRequests = [];
-const memoryNotifications = [];
-const memoryTransactions = [];
-const memoryRefunds = [];
-
-async function ensureDb() {
-  if (!dbEnabled) return;
-  if (alumniUsers && studentUsers) return;
-
-  try {
-    await client.connect();
-    const db = client.db(MONGODB_DB_NAME);
-    alumniUsers = db.collection(alumniCollectionName);
-    studentUsers = db.collection(studentsCollectionName);
-    receipts = db.collection('transactions');
-    requests = db.collection('requests');
-    notifications = db.collection('notifications');
-    transactions = db.collection('transactions');
-    refunds = db.collection('refunds');
-  } catch (error) {
-    throw new Error(`MongoDB connection failed: ${error.message}`);
-  }
-}
-
-const defaultDocumentPrice = 100;
-const defaultProcessingFee = 0;
-
-function getDocumentPrice(docName) {
-  const key = String(docName || '').trim().toLowerCase();
-  if (!key) return defaultDocumentPrice;
-  const priceMap = {
-    'f-137 (sh)': 400,
-    'f-137 (gs/jh)': 250,
-    'f-137 (gs/jh)': 250,
-    'tor': 600,
-    'transcript of records': 600,
-    'transcript of records (tor)': 600,
-    'gwa': 250,
-    'general weighted average (gwa)': 250,
-    'gmc/esc': 200,
-    'good moral character/esc (gmc/esc)': 200,
-    'certificate of good moral': 200,
-    'card (re-print)': 200,
-    'moi': 250,
-    'moi (memorandum of inclusion)': 250,
-    'student verification': 250,
-    'request form (lost)': 200,
-    'ctc': 200,
-    'certified true copy (ctc)': 200,
-    'ctc of certificate of matriculation': 200,
-    'ctc of diploma': 200,
-    'ctc of curriculum': 200,
-    'diploma (2nd copy)': 300,
-    'application for grad': 200,
-    'application for graduation': 200,
-    'certificate of candidacy for graduation': 200,
-    'prospectus': 200,
-    'cert. of grades': 250,
-    'certificate of grades': 250,
-    'grade certification': 250,
-    'transfer credential': 300,
-    'cert. of enrollment': 250,
-    'certificate of enrollment': 250,
-    'clearance': 200,
-    'certificate of units earned': 200,
-    'certificate of assessment': 200,
-    'certificate of registration': 200,
-    'others': 0,
-  };
-  if (priceMap[key] != null) return priceMap[key];
-  if (key.includes('ctc')) return 200;
-  return defaultDocumentPrice;
-}
-
-const emailRegex = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
-const passwordRegex =
-  /^(?=\S{8,72}$)(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/;
-const personNameRegex = /^[\p{L}][\p{L}\p{M} .'-]*$/u;
-const studentIdRegex = /^[A-Za-z0-9][A-Za-z0-9-]{3,29}$/;
-const studentYearLevels = new Set([
-  '1st Year',
-  '2nd Year',
-  '3rd Year',
-  '4th Year',
-  '5th Year',
-  'Graduate Student',
-]);
-
-const otpStore = new Map();
-const registrationOtpStore = new Map();
-const resetTokenStore = new Map();
-
-const smtpEnabled = Boolean(SMTP_HOST && SMTP_PORT && SMTP_USER && SMTP_PASS);
-const mailTransporter = smtpEnabled
-  ? nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: Number(SMTP_PORT),
-      secure: SMTP_SECURE === 'true',
-      auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASS,
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
-    })
-  : null;
+applyAppMiddleware(app);
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
 
-async function normalizeEmailsInCollection(collection, label) {
-  if (!collection) return;
-  try {
-    const cursor = collection.find({}, {
-      projection: { email: 1, schoolEmail: 1, personalEmail: 1 },
-    });
-    for await (const user of cursor) {
-      const updates = {};
-      if (user?.email) {
-        const nextEmail = normalizeEmail(user.email);
-        if (nextEmail && nextEmail !== user.email) {
-          updates.email = nextEmail;
-        }
-      }
-      if (user?.schoolEmail) {
-        const nextSchoolEmail = normalizeEmail(user.schoolEmail);
-        if (nextSchoolEmail && nextSchoolEmail !== user.schoolEmail) {
-          updates.schoolEmail = nextSchoolEmail;
-        }
-      }
-      if (user?.personalEmail) {
-        const nextPersonalEmail = normalizeEmail(user.personalEmail);
-        if (nextPersonalEmail && nextPersonalEmail !== user.personalEmail) {
-          updates.personalEmail = nextPersonalEmail;
-        }
-      }
-      if (Object.keys(updates).length > 0) {
-        try {
-          await collection.updateOne({ _id: user._id }, { $set: updates });
-        } catch (error) {
-          console.warn(
-            `Failed to normalize emails for ${label} ${user._id}:`,
-            error?.message || error,
-          );
-        }
-      }
-    }
-  } catch (error) {
-    console.warn(
-      `Email normalization skipped for ${label}:`,
-      error?.message || error,
-    );
-  }
+function isValidEmail(email) {
+  return email.length <= 254 && emailRegex.test(email);
 }
 
 function makeUserId() {
@@ -350,113 +131,8 @@ function makeRequestId() {
   return `req_${Date.now()}_${randomBytes(6).toString('hex')}`;
 }
 
-function buildUserResponse(user) {
-  if (!user) return null;
-  const role = normalizeRole(user.role);
-  return {
-    id: user._id || user.id,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    email: user.email,
-    role,
-    roleLabel: getRequesterRoleLabel(role),
-  };
-}
-
-function buildProfileResponse(user) {
-  if (!user) return null;
-  const role = normalizeRole(user.role);
-  const isStudent = role === 'student';
-  const schoolEmail = isStudent ? user.schoolEmail || '' : '';
-  return {
-    id: user._id || user.id,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    profileImageUrl: user.profileImageUrl || user.profilePic || '',
-    email: isStudent && schoolEmail ? schoolEmail : user.email,
-    personalEmail: isStudent ? '' : user.personalEmail || user.email || '',
-    role: role || 'alumni',
-    roleLabel: getRequesterRoleLabel(role),
-    schoolEmail,
-    studentId: isStudent ? user.studentId || '' : '',
-    yearLevel: user.yearLevel || '',
-    program: user.program || '',
-  };
-}
-
-function normalizeRole(role) {
-  const normalized = String(role || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[\s-]+/g, '_');
-  if (normalized === 'student') return 'student';
-  if (
-    normalized === 'former_student' ||
-    normalized === 'stopped_student' ||
-    normalized === 'student_stopped' ||
-    normalized === 'stopped'
-  ) {
-    return 'former_student';
-  }
-  if (
-    normalized === 'masters' ||
-    normalized === 'master' ||
-    normalized === "master's" ||
-    normalized === 'masters_student' ||
-    normalized === 'graduate_student'
-  ) {
-    return 'masters';
-  }
-  if (
-    normalized === 'doctorate' ||
-    normalized === 'doctoral' ||
-    normalized === 'doctorate_student' ||
-    normalized === 'doctoral_student' ||
-    normalized === 'phd'
-  ) {
-    return 'doctorate';
-  }
-  return 'alumni';
-}
-
-function getRequesterRoleLabel(role) {
-  switch (normalizeRole(role)) {
-    case 'student':
-      return 'Student';
-    case 'former_student':
-      return 'Former Student';
-    case 'masters':
-      return "Master's";
-    case 'doctorate':
-      return 'Doctorate';
-    default:
-      return 'Alumni';
-  }
-}
-
-function parseRegistrationRole(role) {
-  const normalized = String(role || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[\s-]+/g, '_');
-  const accepted = new Set([
-    'former_student',
-    'stopped_student',
-    'student_stopped',
-    'stopped',
-    'alumni',
-    'masters',
-    'master',
-    "master's",
-    'masters_student',
-    'graduate_student',
-    'doctorate',
-    'doctoral',
-    'doctorate_student',
-    'doctoral_student',
-    'phd',
-  ]);
-  return accepted.has(normalized) ? normalizeRole(normalized) : '';
+function makeRefundId() {
+  return makeUserId();
 }
 
 function getCollectionForRole(role) {
@@ -531,23 +207,34 @@ async function getUserByEmailWithCollection(email, preferredRole) {
 async function getUserFromAuth(payload) {
   if (!payload) return null;
   const sub = String(payload.sub || '').trim();
-  if (sub) {
-    const byId = await getUserById(sub);
-    if (byId) return byId;
+  if (!sub) return null;
+  const user = await getUserById(sub);
+  if (!user) return null;
+  const tokenSessionVersion = Number(payload.sv || 0);
+  const currentSessionVersion = Number(user.sessionVersion || 0);
+  if (!Number.isSafeInteger(tokenSessionVersion) ||
+      tokenSessionVersion !== currentSessionVersion) {
+    return null;
   }
-
-  const email = normalizeEmail(payload.email);
-  if (emailRegex.test(email)) {
-    return getUserByEmail(email);
+  const tokensValidAfter = new Date(user.tokensValidAfter || 0).getTime();
+  const issuedAt = Number(payload.iat || 0) * 1000;
+  if (Number.isFinite(tokensValidAfter) && tokensValidAfter > 0 &&
+      issuedAt < Math.floor(tokensValidAfter / 1000) * 1000) {
+    return null;
   }
-
-  return null;
+  return user;
 }
 
 function toPositiveNumber(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
+}
+
+function toBoundedInteger(value, fallback, maximum) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, maximum);
 }
 
 function toNonNegativeNumber(value, fallback) {
@@ -589,19 +276,6 @@ function normalizeWorkflowStatus(value) {
     .toLowerCase()
     .replace(/[\s-]+/g, '_');
 }
-
-const terminalWorkflowStatuses = new Set([
-  'approved',
-  'completed',
-  'complete',
-  'released',
-  'rejected',
-  'declined',
-  'denied',
-  'cancelled',
-  'canceled',
-  'refunded',
-]);
 
 function isTerminalWorkflowStatus(value) {
   return terminalWorkflowStatuses.has(normalizeWorkflowStatus(value));
@@ -711,23 +385,28 @@ function buildRefundGuidance({
   };
 }
 
-const jwtIssuer = String(JWT_ISSUER || '').trim();
+const jwtIssuer = config.jwt.issuer;
+const jwtAudience = config.jwt.audience;
 const accessTokenTtlSeconds =
-  toPositiveNumber(JWT_ACCESS_TTL_MINUTES, 15) * 60;
+  toPositiveNumber(config.jwt.accessTtlMinutes, 15) * 60;
 const refreshTokenTtlMs =
-  toPositiveNumber(JWT_REFRESH_TTL_DAYS, 30) * 24 * 60 * 60 * 1000;
-const notificationsApiKey = String(NOTIFICATIONS_API_KEY || '').trim();
+  toPositiveNumber(config.jwt.refreshTtlDays, 30) * 24 * 60 * 60 * 1000;
 
 function signAccessToken(user) {
   const payload = {
     sub: String(user._id || user.id || ''),
     email: user.email,
     role: normalizeRole(user.role),
+    sv: Number(user.sessionVersion || 0),
   };
-  const options = jwtIssuer
-    ? { expiresIn: accessTokenTtlSeconds, issuer: jwtIssuer }
-    : { expiresIn: accessTokenTtlSeconds };
-  return jwt.sign(payload, JWT_SECRET, options);
+  const options = {
+    algorithm: 'HS256',
+    expiresIn: accessTokenTtlSeconds,
+    jwtid: randomBytes(16).toString('hex'),
+    ...(jwtIssuer ? { issuer: jwtIssuer } : {}),
+    ...(jwtAudience ? { audience: jwtAudience } : {}),
+  };
+  return jwt.sign(payload, jwtSecret, options);
 }
 
 function makeRefreshToken() {
@@ -738,9 +417,10 @@ function hashRefreshToken(token) {
   return createHash('sha256').update(token).digest('hex');
 }
 
-function buildRefreshTokenRecord(token) {
+function buildRefreshTokenRecord(token, user) {
   return {
     tokenHash: hashRefreshToken(token),
+    sessionVersion: Number(user?.sessionVersion || 0),
     createdAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + refreshTokenTtlMs).toISOString(),
   };
@@ -756,12 +436,34 @@ function isRefreshTokenExpired(record) {
   return new Date(record.expiresAt).getTime() <= Date.now();
 }
 
-async function storeRefreshToken(email, record) {
+function refreshTokenPredatesSecurityChange(user, record) {
+  const validAfter = new Date(user?.tokensValidAfter || 0).getTime();
+  const createdAt = new Date(record?.createdAt || 0).getTime();
+  return Number.isFinite(validAfter) && validAfter > 0 && createdAt < validAfter;
+}
+
+function sessionVersionMongoFilter(expectedSessionVersion) {
+  return expectedSessionVersion === 0
+    ? {
+        $or: [
+          { sessionVersion: 0 },
+          { sessionVersion: { $exists: false } },
+        ],
+      }
+    : { sessionVersion: expectedSessionVersion };
+}
+
+async function storeRefreshToken(user, record) {
+  const email = normalizeEmail(user?.email);
+  const expectedSessionVersion = Number(user?.sessionVersion || 0);
   if (dbEnabled) {
-    const found = await getUserByEmailWithCollection(email);
-    if (!found?.collection) return;
-    await found.collection.updateOne(
-      { email },
+    const collection = getCollectionForRole(user?.role);
+    if (!collection || !user?._id) return false;
+    const sessionVersionFilter = sessionVersionMongoFilter(
+      expectedSessionVersion,
+    );
+    const result = await collection.updateOne(
+      { _id: user._id, ...sessionVersionFilter },
       {
         $push: {
           refreshTokens: {
@@ -771,11 +473,13 @@ async function storeRefreshToken(email, record) {
         },
       },
     );
-    return;
+    return result.modifiedCount === 1;
   }
 
   const existing = memoryUsers.get(email);
-  if (!existing) return;
+  if (!existing || Number(existing.sessionVersion || 0) !== expectedSessionVersion) {
+    return false;
+  }
   const refreshTokens = Array.isArray(existing.refreshTokens)
     ? existing.refreshTokens
     : [];
@@ -783,21 +487,23 @@ async function storeRefreshToken(email, record) {
     ...existing,
     refreshTokens: [...refreshTokens, record].slice(-5),
   });
+  return true;
 }
 
-async function revokeRefreshToken(email, tokenHash) {
+async function revokeRefreshToken(user, tokenHash) {
+  const email = normalizeEmail(user?.email);
   if (dbEnabled) {
-    const found = await getUserByEmailWithCollection(email);
-    if (!found?.collection) return;
-    await found.collection.updateOne(
-      { email },
+    const collection = getCollectionForRole(user?.role);
+    if (!collection || !user?._id) return false;
+    const result = await collection.updateOne(
+      { _id: user._id },
       { $pull: { refreshTokens: { tokenHash } } },
     );
-    return;
+    return result.modifiedCount === 1;
   }
 
   const existing = memoryUsers.get(email);
-  if (!existing) return;
+  if (!existing) return false;
   const refreshTokens = Array.isArray(existing.refreshTokens)
     ? existing.refreshTokens
     : [];
@@ -807,61 +513,20 @@ async function revokeRefreshToken(email, tokenHash) {
       (record) => record.tokenHash !== tokenHash,
     ),
   });
+  return refreshTokens.some((record) => record.tokenHash === tokenHash);
 }
 
 async function issueTokensForUser(user) {
   const refreshToken = makeRefreshToken();
-  const refreshRecord = buildRefreshTokenRecord(refreshToken);
-  await storeRefreshToken(user.email, refreshRecord);
+  const refreshRecord = buildRefreshTokenRecord(refreshToken, user);
+  const stored = await storeRefreshToken(user, refreshRecord);
+  if (!stored) return null;
   const accessToken = signAccessToken(user);
   return {
     accessToken,
     refreshToken,
     expiresInSeconds: accessTokenTtlSeconds,
   };
-}
-
-function requireAuth(req, res, next) {
-  const authHeader = String(req.headers.authorization || '');
-  if (!authHeader.startsWith('Bearer ')) {
-    return res
-      .status(401)
-      .json({ success: false, message: 'Missing access token.' });
-  }
-
-  const token = authHeader.slice(7).trim();
-  if (!token) {
-    return res
-      .status(401)
-      .json({ success: false, message: 'Missing access token.' });
-  }
-
-  try {
-    const payload = jwtIssuer
-      ? jwt.verify(token, JWT_SECRET, { issuer: jwtIssuer })
-      : jwt.verify(token, JWT_SECRET);
-    req.auth = payload;
-    return next();
-  } catch (error) {
-    return res
-      .status(401)
-      .json({ success: false, message: 'Invalid or expired token.' });
-  }
-}
-
-function requireNotificationSender(req, res, next) {
-  const headerKey = String(req.headers['x-notification-key'] || '').trim();
-  if (notificationsApiKey) {
-    if (headerKey && headerKey === notificationsApiKey) {
-      return next();
-    }
-    return requireAuth(req, res, next);
-  }
-
-  if (headerKey) {
-    return next();
-  }
-  return requireAuth(req, res, next);
 }
 
 async function getUserByEmail(email) {
@@ -881,17 +546,6 @@ async function createUserDocument(user) {
   const id = user._id || user.id || makeUserId();
   memoryUsers.set(user.email, { ...user, _id: id });
   return { insertedId: id };
-}
-
-async function createReceiptRecord(receipt) {
-  if (dbEnabled) {
-    const result = await receipts.insertOne(receipt);
-    return result.insertedId;
-  }
-
-  const id = makeUserId();
-  memoryReceipts.push({ ...receipt, _id: id });
-  return id;
 }
 
 function buildReceiptRecord({
@@ -947,8 +601,6 @@ function buildReceiptResponse(record) {
   const id = record._id || record.id;
   return {
     id: id ? String(id) : '',
-    imageUrl: record.imageUrl || '',
-    publicId: record.publicId || '',
     amount: record.amount ?? null,
     status: record.status || '',
     paymentType: record.paymentType || '',
@@ -956,87 +608,6 @@ function buildReceiptResponse(record) {
     purpose: record.purpose || '',
     createdAt: record.createdAt || new Date().toISOString(),
   };
-}
-
-async function uploadReceiptToCloudinary(file) {
-  if (!cloudinaryEnabled) {
-    if (process.env.VERCEL) {
-      throw new Error('Cloudinary is not configured. Local uploads are not supported on Vercel. Please add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET to Vercel environment variables.');
-    }
-    const fileName = `receipt-${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
-    const uploadDir = 'c:\\Users\\Sarah\\VeriFitorWeb\\Verifitor-Web-main\\backend\\uploads\\receipts';
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    const filePath = path.join(uploadDir, fileName);
-    await fs.promises.writeFile(filePath, file.buffer);
-    return {
-      secure_url: `/uploads/receipts/${fileName}`,
-      url: `/uploads/receipts/${fileName}`,
-      public_id: `local-${fileName}`
-    };
-  }
-  if (!file?.buffer) {
-    throw new Error('Receipt image is required.');
-  }
-
-  return new Promise((resolve, reject) => {
-    const upload = cloudinary.uploader.upload_stream(
-      {
-        folder: 'capstone/receipts',
-        resource_type: 'image',
-      },
-      (error, result) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(result);
-      },
-    );
-
-    upload.end(file.buffer);
-  });
-}
-
-async function uploadProfilePhotoToCloudinary(file) {
-  if (!cloudinaryEnabled) {
-    if (process.env.VERCEL) {
-      throw new Error('Cloudinary is not configured. Local uploads are not supported on Vercel. Please add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET to Vercel environment variables.');
-    }
-    const fileName = `profile-${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
-    if (!fs.existsSync(profilesDir)) {
-      fs.mkdirSync(profilesDir, { recursive: true });
-    }
-    const filePath = path.join(profilesDir, fileName);
-    await fs.promises.writeFile(filePath, file.buffer);
-    return {
-      secure_url: `/uploads/profiles/${fileName}`,
-      url: `/uploads/profiles/${fileName}`,
-      public_id: `local-${fileName}`
-    };
-  }
-  if (!file?.buffer) {
-    throw new Error('Profile photo is required.');
-  }
-
-  return new Promise((resolve, reject) => {
-    const upload = cloudinary.uploader.upload_stream(
-      {
-        folder: 'capstone/profiles',
-        resource_type: 'image',
-      },
-      (error, result) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(result);
-      },
-    );
-
-    upload.end(file.buffer);
-  });
 }
 
 function buildMongoOwnerClauses(user) {
@@ -1048,19 +619,20 @@ function buildMongoOwnerClauses(user) {
       clauses.push({ userId: new ObjectId(stringId) });
     }
     clauses.push({ userId: stringId });
+    return clauses;
   }
   const email = normalizeEmail(user?.email);
-  if (emailRegex.test(email)) clauses.push({ email });
+  if (isValidEmail(email)) clauses.push({ email });
   return clauses;
 }
 
 function recordBelongsToUser(record, user) {
   const userId = user?._id || user?.id;
   const email = normalizeEmail(user?.email);
-  return Boolean(
-    (userId && String(record?.userId || '') === String(userId)) ||
-    (email && normalizeEmail(record?.email) === email),
-  );
+  if (userId) {
+    return String(record?.userId || '') === String(userId);
+  }
+  return Boolean(email && normalizeEmail(record?.email) === email);
 }
 
 async function findLatestRequestForUser(user, {
@@ -1240,19 +812,9 @@ async function findLinkedRequestsForTransactions(user, transactionRecords) {
 }
 
 async function findLatestReceiptForUser(user, { docName, purpose }) {
-  const userId = user?._id || user?.id;
-  const email = normalizeEmail(user?.email);
-  if (!userId && !email) return null;
-
   if (dbEnabled) {
     const query = {};
-    const clauses = [];
-    if (userId && ObjectId.isValid(String(userId))) {
-      clauses.push({ userId: new ObjectId(String(userId)) });
-    }
-    if (emailRegex.test(email)) {
-      clauses.push({ email });
-    }
+    const clauses = buildMongoOwnerClauses(user);
     if (clauses.length === 0) return null;
     query.$or = clauses;
     if (docName) query.docName = docName;
@@ -1265,16 +827,8 @@ async function findLatestReceiptForUser(user, { docName, purpose }) {
     return results[0] || null;
   }
 
-  const normalizedId = userId ? String(userId) : '';
-  const items = memoryReceipts.filter((record) => {
-    if (normalizedId && String(record.userId) === normalizedId) {
-      return true;
-    }
-    if (email && String(record.email || '').toLowerCase() === email) {
-      return true;
-    }
-    return false;
-  });
+  const items = memoryReceipts.filter((record) =>
+    recordBelongsToUser(record, user));
 
   const filtered = items.filter((record) => {
     if (docName && record.docName !== docName) return false;
@@ -1317,20 +871,10 @@ async function createNotificationRecord(notification) {
 }
 
 async function listNotificationsForUser(user, limit) {
-  const userId = user?._id || user?.id;
-  const email = normalizeEmail(user?.email);
-  if (!userId && !email) return [];
-
-  const safeLimit = Math.min(toPositiveNumber(limit, 50), 200);
+  const safeLimit = toBoundedInteger(limit, 50, 200);
 
   if (dbEnabled) {
-    const clauses = [];
-    if (userId && ObjectId.isValid(String(userId))) {
-      clauses.push({ userId: new ObjectId(String(userId)) });
-    }
-    if (emailRegex.test(email)) {
-      clauses.push({ email });
-    }
+    const clauses = buildMongoOwnerClauses(user);
     if (clauses.length === 0) return [];
     return notifications
       .find({ $or: clauses })
@@ -1339,17 +883,8 @@ async function listNotificationsForUser(user, limit) {
       .toArray();
   }
 
-  const normalizedId = userId ? String(userId) : '';
   return memoryNotifications
-    .filter((record) => {
-      if (normalizedId && String(record.userId) === normalizedId) {
-        return true;
-      }
-      if (email && String(record.email || '').toLowerCase() === email) {
-        return true;
-      }
-      return false;
-    })
+    .filter((record) => recordBelongsToUser(record, user))
     .sort(
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
@@ -1362,30 +897,18 @@ function buildNotificationResponse(record) {
   const id = record._id || record.id;
   return {
     id: id ? String(id) : '',
-    title: record.title || '',
+    title: firstNonEmptyString(record.title, 'Request update'),
     message: record.message || '',
     isRead: Boolean(record.isRead),
     createdAt: record.createdAt || new Date().toISOString(),
-    email: record.email || '',
-    userId: record.userId ? String(record.userId) : '',
   };
 }
 
 async function listTransactionsForUser(user, limit) {
-  const userId = user?._id || user?.id;
-  const email = normalizeEmail(user?.email);
-  if (!userId && !email) return [];
-
-  const safeLimit = Math.min(toPositiveNumber(limit, 50), 200);
+  const safeLimit = toBoundedInteger(limit, 50, 200);
 
   if (dbEnabled) {
-    const clauses = [];
-    if (userId && ObjectId.isValid(String(userId))) {
-      clauses.push({ userId: new ObjectId(String(userId)) });
-    }
-    if (emailRegex.test(email)) {
-      clauses.push({ email });
-    }
+    const clauses = buildMongoOwnerClauses(user);
     if (clauses.length === 0) return [];
     return transactions
       .find({ $or: clauses })
@@ -1394,17 +917,8 @@ async function listTransactionsForUser(user, limit) {
       .toArray();
   }
 
-  const normalizedId = userId ? String(userId) : '';
   return memoryTransactions
-    .filter((record) => {
-      if (normalizedId && String(record.userId) === normalizedId) {
-        return true;
-      }
-      if (email && String(record.email || '').toLowerCase() === email) {
-        return true;
-      }
-      return false;
-    })
+    .filter((record) => recordBelongsToUser(record, user))
     .sort(
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
@@ -1413,7 +927,7 @@ async function listTransactionsForUser(user, limit) {
 }
 
 async function listRefundsForUser(user, limit = 200) {
-  const safeLimit = Math.min(toPositiveNumber(limit, 200), 500);
+  const safeLimit = toBoundedInteger(limit, 200, 500);
   if (dbEnabled) {
     const ownerClauses = buildMongoOwnerClauses(user);
     if (ownerClauses.length === 0) return [];
@@ -1463,10 +977,125 @@ function buildRefundResponse(record) {
     refundMethod: firstNonEmptyString(record.refundMethod),
     reason: firstNonEmptyString(record.reason),
     rejectionRemarks: firstNonEmptyString(record.rejectionRemarks),
+    statusRemarks: getRefundStatusRemarks(record),
     status: firstNonEmptyString(record.status, 'pending'),
     createdAt: record.createdAt || new Date().toISOString(),
     updatedAt: record.updatedAt || record.createdAt || new Date().toISOString(),
   };
+}
+
+function normalizeRefundStatus(value) {
+  let normalized = normalizeWorkflowStatus(value);
+  if (normalized.startsWith('refund_')) {
+    normalized = normalized.slice('refund_'.length);
+  }
+  return refundStatusAliases.get(normalized) || '';
+}
+
+function getRefundRecordId(record) {
+  return firstNonEmptyString(record?.refundId, record?._id, record?.id);
+}
+
+function getRefundStatusRemarks(record) {
+  return firstMeaningfulString(
+    record?.refundStatusRemarks,
+    record?.statusRemarks,
+    record?.refundRejectionReason,
+    record?.rejectionReason,
+    record?.adminRemarks,
+    record?.remarks,
+  );
+}
+
+function buildRefundStatusNotification(record, fallbackUser = null) {
+  const status = normalizeRefundStatus(record?.status);
+  const refundId = getRefundRecordId(record);
+  if (!refundId || !status || status === 'pending') return null;
+
+  const docName = firstNonEmptyString(record?.docName, 'your document');
+  const remarks = getRefundStatusRemarks(record);
+  let title;
+  let message;
+  switch (status) {
+    case 'approved':
+      title = 'Refund request approved';
+      message = `Your refund request for ${docName} was approved.`;
+      break;
+    case 'processing':
+      title = 'Refund is being processed';
+      message = `Your approved refund for ${docName} is being processed.`;
+      break;
+    case 'completed':
+    case 'refunded':
+      title = 'Refund sent';
+      message = `Your refund for ${docName} was marked as sent.`;
+      break;
+    case 'rejected':
+      title = 'Refund request rejected';
+      message = `Your refund request for ${docName} was rejected.`;
+      if (remarks) message += ` Reason: ${remarks}`;
+      break;
+    default:
+      return null;
+  }
+
+  const createdAt = new Date().toISOString();
+  return {
+    eventKey: `refund:${refundId}:status:${status}`,
+    userId: record?.userId || fallbackUser?._id || fallbackUser?.id,
+    email: normalizeEmail(record?.email || fallbackUser?.email),
+    title,
+    message,
+    isRead: false,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+function notificationIdForEvent(eventKey) {
+  const hex = createHash('sha256').update(eventKey).digest('hex').slice(0, 24);
+  return new ObjectId(hex);
+}
+
+async function createNotificationRecordOnce(notification) {
+  const eventKey = firstNonEmptyString(notification?.eventKey);
+  if (!eventKey) {
+    const notificationId = await createNotificationRecord(notification);
+    return { notificationId, created: true };
+  }
+
+  const notificationId = notificationIdForEvent(eventKey);
+  if (dbEnabled) {
+    try {
+      await notifications.insertOne({ ...notification, _id: notificationId });
+      return { notificationId, created: true };
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+      return { notificationId, created: false };
+    }
+  }
+
+  const existing = memoryNotifications.find(
+    (record) => record.eventKey === eventKey,
+  );
+  if (existing) {
+    return {
+      notificationId: existing._id || existing.id,
+      created: false,
+    };
+  }
+  memoryNotifications.push({ ...notification, _id: String(notificationId) });
+  return { notificationId, created: true };
+}
+
+async function reconcileRefundNotificationsForUser(user) {
+  const refundRecords = await listRefundsForUser(user);
+  for (const refundRecord of refundRecords) {
+    const notification = buildRefundStatusNotification(refundRecord, user);
+    if (notification) {
+      await createNotificationRecordOnce(notification);
+    }
+  }
 }
 
 function buildTransactionResponse(
@@ -1526,25 +1155,7 @@ function buildTransactionResponse(
       refundRecord?.updatedAt,
       refundRecord?.createdAt,
     ),
-    email: record.email || '',
-    userId: record.userId ? String(record.userId) : '',
   };
-}
-
-async function revokeAllRefreshTokens(email) {
-  if (dbEnabled) {
-    const found = await getUserByEmailWithCollection(email);
-    if (!found?.collection) return;
-    await found.collection.updateOne(
-      { email },
-      { $set: { refreshTokens: [] } },
-    );
-    return;
-  }
-
-  const existing = memoryUsers.get(email);
-  if (!existing) return;
-  memoryUsers.set(email, { ...existing, refreshTokens: [] });
 }
 
 async function findTransactionForUser(user, transactionId) {
@@ -1568,9 +1179,7 @@ async function findTransactionForUser(user, transactionId) {
   return memoryTransactions.find((record) => {
     const recordIds = [record._id, record.id, record.transactionId]
       .map((value) => firstNonEmptyString(value));
-    const ownsRecord =
-      (userId && String(record.userId) === String(userId)) ||
-      (email && normalizeEmail(record.email) === email);
+    const ownsRecord = recordBelongsToUser(record, user);
     return ownsRecord && recordIds.includes(transactionId);
   }) || null;
 }
@@ -1598,13 +1207,135 @@ async function findRefundForTransaction(user, transactionId, transaction = null)
 
   return memoryRefunds.find((record) =>
     transactionIds.includes(firstNonEmptyString(record.transactionId)) &&
-    ((userId && String(record.userId) === String(userId)) ||
-      (email && normalizeEmail(record.email) === email))
+    recordBelongsToUser(record, user)
   ) || null;
 }
 
-async function createRefundRecord(record, transaction) {
+async function findRefundById(refundId) {
+  const normalizedId = firstNonEmptyString(refundId);
+  if (!normalizedId) return null;
+
   if (dbEnabled) {
+    const identifiers = [
+      { refundId: normalizedId },
+      { id: normalizedId },
+    ];
+    if (ObjectId.isValid(normalizedId)) {
+      identifiers.push({ _id: new ObjectId(normalizedId) });
+    }
+    return refunds.findOne({ $or: identifiers });
+  }
+
+  return memoryRefunds.find((record) => [
+    record.refundId,
+    record._id,
+    record.id,
+  ].map((value) => firstNonEmptyString(value)).includes(normalizedId)) || null;
+}
+
+async function updateRefundRecordStatus(record, status, remarks, updatedAt) {
+  const updates = {
+    status,
+    statusRemarks: remarks,
+    updatedAt,
+  };
+
+  if (dbEnabled) {
+    const id = getRefundRecordId(record);
+    const identifiers = [
+      { refundId: id },
+      { id },
+    ];
+    if (record?._id) identifiers.unshift({ _id: record._id });
+    const updated = await refunds.findOneAndUpdate(
+      { $or: identifiers },
+      { $set: updates },
+      { returnDocument: 'after' },
+    );
+    return updated || null;
+  }
+
+  Object.assign(record, updates);
+  return record;
+}
+
+async function syncLinkedRefundStatus(record, status, updatedAt) {
+  const updates = { refundStatus: status, refundUpdatedAt: updatedAt };
+  const ownerClauses = buildMongoOwnerClauses({
+    _id: record?.userId,
+    email: record?.email,
+  });
+  const transactionId = firstNonEmptyString(record?.transactionId);
+  const requestId = firstNonEmptyString(record?.requestId);
+
+  if (dbEnabled) {
+    if (transactionId) {
+      const identifiers = [
+        { transactionId },
+        { id: transactionId },
+      ];
+      if (ObjectId.isValid(transactionId)) {
+        identifiers.push({ _id: new ObjectId(transactionId) });
+      }
+      await transactions.updateOne(
+        ownerClauses.length > 0
+          ? { $and: [{ $or: ownerClauses }, { $or: identifiers }] }
+          : { $or: identifiers },
+        { $set: updates },
+      );
+    }
+
+    if (requestId) {
+      const identifiers = [
+        { requestId },
+        { request_id: requestId },
+        { linkedRequestId: requestId },
+      ];
+      if (ObjectId.isValid(requestId)) {
+        identifiers.push({ _id: new ObjectId(requestId) });
+      }
+      await requests.updateOne(
+        ownerClauses.length > 0
+          ? { $and: [{ $or: ownerClauses }, { $or: identifiers }] }
+          : { $or: identifiers },
+        { $set: updates },
+      );
+    }
+    return;
+  }
+
+  const owner = { _id: record?.userId, email: record?.email };
+  if (transactionId) {
+    const transaction = memoryTransactions.find((candidate) =>
+      recordBelongsToUser(candidate, owner) && [
+        candidate._id,
+        candidate.id,
+        candidate.transactionId,
+      ].map((value) => firstNonEmptyString(value)).includes(transactionId));
+    if (transaction) Object.assign(transaction, updates);
+  }
+
+  if (requestId) {
+    const request = memoryRequests.find((candidate) =>
+      recordBelongsToUser(candidate, owner) && [
+        candidate._id,
+        candidate.id,
+        candidate.requestId,
+        candidate.request_id,
+        candidate.linkedRequestId,
+      ].map((value) => firstNonEmptyString(value)).includes(requestId));
+    if (request) Object.assign(request, updates);
+  }
+}
+
+async function createRefundRecord(record, transaction) {
+  // Some deployed databases retain a non-sparse unique refundId index.
+  // Always populate it so separate refunds never collide on a null key.
+  record.refundId = firstNonEmptyString(record.refundId, makeRefundId());
+  if (dbEnabled) {
+    if (!record._id && ObjectId.isValid(record.refundId)) {
+      record._id = new ObjectId(record.refundId);
+    }
     const result = await refunds.insertOne(record);
     const refundUpdates = {
       refundStatus: 'pending',
@@ -1637,7 +1368,7 @@ async function createRefundRecord(record, transaction) {
     return result.insertedId;
   }
 
-  const id = makeUserId();
+  const id = firstNonEmptyString(record._id, record.refundId, makeUserId());
   memoryRefunds.push({ ...record, _id: id });
   const index = memoryTransactions.indexOf(transaction);
   if (index >= 0) {
@@ -1675,47 +1406,101 @@ async function createRefundRecord(record, transaction) {
   return id;
 }
 
-async function updateRequestStatusForPayment({
-  userId,
-  docName,
-  purpose,
-  paymentType,
-}) {
-  if (!userId || !docName || !purpose) return null;
+class PaymentSubmissionConflictError extends Error {}
 
-  const updates = {
-    status: 'Pending',
-    mobileStatus: 'pending',
-    paymentType,
-    updatedAt: new Date().toISOString(),
-  };
+function isAwaitingPayment(record) {
+  return normalizeWorkflowStatus(record?.mobileStatus) === 'pending_payment' &&
+    !isTerminalWorkflowStatus(resolveWorkflowStatus(record));
+}
 
-  if (dbEnabled) {
-    const record = await requests.findOne(
-      { userId, docName, purpose },
-      { sort: { createdAt: -1 } },
-    );
-    if (!record?._id) return null;
-    await requests.updateOne({ _id: record._id }, { $set: updates });
-    return record._id;
+async function commitPaymentReceipt({ user, linkedRequest, receipt }) {
+  if (!isAwaitingPayment(linkedRequest)) {
+    throw new PaymentSubmissionConflictError();
   }
 
-  const recordIndex = [...memoryRequests]
-    .reverse()
-    .findIndex(
-      (record) =>
-        String(record.userId) === String(userId) &&
-        record.docName === docName &&
-        record.purpose === purpose,
-    );
+  const paymentSubmissionId = randomBytes(24).toString('hex');
+  const updatedAt = new Date().toISOString();
 
-  if (recordIndex < 0) return null;
-  const actualIndex = memoryRequests.length - 1 - recordIndex;
-  memoryRequests[actualIndex] = {
-    ...memoryRequests[actualIndex],
-    ...updates,
+  if (dbEnabled) {
+    if (!linkedRequest?._id) throw new PaymentSubmissionConflictError();
+    const ownerClauses = buildMongoOwnerClauses(user);
+    if (ownerClauses.length === 0) throw new PaymentSubmissionConflictError();
+
+    const receiptId = new ObjectId();
+    const session = client.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const observedRevision = ['updatedAt', 'status', 'state', 'requestStatus', 'mobileStatus']
+          .map((field) => Object.prototype.hasOwnProperty.call(linkedRequest, field)
+            ? { [field]: linkedRequest[field] }
+            : { [field]: { $exists: false } });
+        const requestUpdate = await requests.updateOne(
+          {
+            $and: [
+              { _id: linkedRequest._id },
+              { $or: ownerClauses },
+              { mobileStatus: 'pending_payment' },
+              ...observedRevision,
+              {
+                $or: [
+                  { paymentReceiptId: { $exists: false } },
+                  { paymentReceiptId: null },
+                  { paymentReceiptId: '' },
+                ],
+              },
+            ],
+          },
+          {
+            $set: {
+              status: 'Pending',
+              mobileStatus: 'pending',
+              paymentType: receipt.paymentType,
+              paymentReceiptId: receiptId,
+              paymentSubmissionId,
+              updatedAt,
+            },
+          },
+          { session },
+        );
+        if (requestUpdate.modifiedCount !== 1) {
+          throw new PaymentSubmissionConflictError();
+        }
+        await receipts.insertOne(
+          { ...receipt, _id: receiptId, paymentSubmissionId },
+          { session },
+        );
+      });
+      return receiptId;
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  const requestIndex = memoryRequests.findIndex((record) =>
+    recordBelongsToUser(record, user) &&
+    getRequestResponseId(record) === getRequestResponseId(linkedRequest));
+  const currentRequest = memoryRequests[requestIndex];
+  if (requestIndex < 0 || !isAwaitingPayment(currentRequest) ||
+      firstNonEmptyString(currentRequest.paymentReceiptId)) {
+    throw new PaymentSubmissionConflictError();
+  }
+
+  const receiptId = makeUserId();
+  memoryRequests[requestIndex] = {
+    ...currentRequest,
+    status: 'Pending',
+    mobileStatus: 'pending',
+    paymentType: receipt.paymentType,
+    paymentReceiptId: receiptId,
+    paymentSubmissionId,
+    updatedAt,
   };
-  return memoryRequests[actualIndex]._id || memoryRequests[actualIndex].id;
+  memoryReceipts.push({
+    ...receipt,
+    _id: receiptId,
+    paymentSubmissionId,
+  });
+  return receiptId;
 }
 
 function buildRequestResponse(record) {
@@ -1753,7 +1538,6 @@ function buildRequestResponse(record) {
     refundStatus: record.refundStatus,
     refundRequestedAt: record.refundRequestedAt,
   });
-  const role = record.role ? normalizeRole(record.role) : '';
   return {
     id: id ? String(id) : '',
     requestId,
@@ -1763,14 +1547,6 @@ function buildRequestResponse(record) {
     status,
     createdAt: record.createdAt || new Date().toISOString(),
     updatedAt: record.updatedAt || record.createdAt || new Date().toISOString(),
-    email: record.email || '',
-    role,
-    roleLabel: role ? getRequesterRoleLabel(role) : '',
-    schoolEmail: record.schoolEmail || '',
-    studentId: record.studentId || '',
-    yearGraduated: record.yearGraduated || '',
-    yearLevel: record.yearLevel || '',
-    program: record.program || '',
     documentPrice,
     processingFee,
     totalAmount,
@@ -1869,65 +1645,114 @@ async function upsertUserDocument(user) {
   });
 }
 
-async function updateUserPassword(email, passwordHash) {
+async function updateUserPassword(
+  user,
+  passwordHash,
+  expectedSessionVersion = Number(user?.sessionVersion || 0),
+) {
+  const email = normalizeEmail(user?.email);
   if (dbEnabled) {
-    const found = await getUserByEmailWithCollection(email);
-    if (!found?.collection) return;
-    await found.collection.updateOne(
-      { email },
+    const collection = getCollectionForRole(user?.role);
+    if (!collection || !user?._id) return false;
+    const result = await collection.updateOne(
       {
-        $set: { passwordHash, updatedAt: new Date().toISOString() },
+        _id: user._id,
+        ...sessionVersionMongoFilter(expectedSessionVersion),
+      },
+      {
+        $set: {
+          passwordHash,
+          refreshTokens: [],
+          tokensValidAfter: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        $inc: { sessionVersion: 1 },
         $unset: { password: '' },
       },
     );
-    return;
+    return result.matchedCount === 1;
   }
 
   const existing = memoryUsers.get(email);
-  if (!existing) return;
+  if (!existing ||
+      Number(existing.sessionVersion || 0) !== expectedSessionVersion) {
+    return false;
+  }
   memoryUsers.set(email, {
     ...existing,
     passwordHash,
     password: undefined,
+    refreshTokens: [],
+    sessionVersion: Number(existing.sessionVersion || 0) + 1,
+    tokensValidAfter: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
+  return true;
 }
 
 async function ensurePasswordHash(user) {
   if (!user) return '';
-  if (user.passwordHash) return user.passwordHash;
+  if (/^\$2[aby]\$\d{2}\$/.test(String(user.passwordHash || ''))) {
+    return user.passwordHash;
+  }
   if (!user.password) return '';
 
-  const legacyHash = String(user.password).trim();
-  if (!legacyHash) return '';
+  const legacyPassword = String(user.password);
+  if (!legacyPassword) return '';
+  const passwordHash = /^\$2[aby]\$\d{2}\$/.test(legacyPassword)
+    ? legacyPassword
+    : await bcrypt.hash(legacyPassword, 12);
+  const expectedSessionVersion = Number(user.sessionVersion || 0);
 
   if (dbEnabled) {
-    const found = await getUserByEmailWithCollection(
-      normalizeEmail(user.email),
-    );
-    if (found?.collection && user._id) {
-      await found.collection.updateOne(
-        { _id: user._id },
+    const collection = getCollectionForRole(user.role);
+    if (collection && user._id) {
+      const result = await collection.updateOne(
         {
-          $set: { passwordHash: legacyHash, updatedAt: new Date().toISOString() },
+          $and: [
+            { _id: user._id, password: user.password },
+            sessionVersionMongoFilter(expectedSessionVersion),
+            {
+              $or: [
+                { passwordHash: { $exists: false } },
+                { passwordHash: null },
+                { passwordHash: '' },
+              ],
+            },
+          ],
+        },
+        {
+          $set: { passwordHash, updatedAt: new Date().toISOString() },
           $unset: { password: '' },
         },
       );
+      if (result.matchedCount === 1) return passwordHash;
+      const current = await getUserById(String(user._id));
+      return /^\$2[aby]\$\d{2}\$/.test(String(current?.passwordHash || ''))
+        ? current.passwordHash
+        : '';
     }
   } else {
     const email = normalizeEmail(user.email);
     const existing = memoryUsers.get(email);
-    if (existing) {
+    if (existing &&
+        Number(existing.sessionVersion || 0) === expectedSessionVersion &&
+        existing.password === user.password &&
+        !/^\$2[aby]\$\d{2}\$/.test(String(existing.passwordHash || ''))) {
       memoryUsers.set(email, {
         ...existing,
-        passwordHash: legacyHash,
+        passwordHash,
         password: undefined,
         updatedAt: new Date().toISOString(),
       });
+      return passwordHash;
     }
+    return /^\$2[aby]\$\d{2}\$/.test(String(existing?.passwordHash || ''))
+      ? existing.passwordHash
+      : '';
   }
 
-  return legacyHash;
+  return passwordHash;
 }
 
 async function updateUserProfile(user, updates) {
@@ -1963,12 +1788,14 @@ async function validateEmailWithMailboxlayer(email) {
     return { isValid: true, reason: 'Mailboxlayer not configured' };
   }
 
-  const endpoint = `http://apilayer.net/api/check?access_key=${encodeURIComponent(
+  const endpoint = `https://apilayer.net/api/check?access_key=${encodeURIComponent(
     MAILBOXLAYER_ACCESS_KEY,
   )}&email=${encodeURIComponent(email)}&smtp=1&format=1`;
 
   try {
-    const response = await fetch(endpoint);
+    const response = await fetch(endpoint, {
+      signal: AbortSignal.timeout(5000),
+    });
     if (!response.ok) {
       return { isValid: true, reason: 'Mailboxlayer request failed' };
     }
@@ -1988,106 +1815,64 @@ async function validateEmailWithMailboxlayer(email) {
   }
 }
 
-function makeOtp() {
-  return String(randomInt(100000, 1000000));
+function normalizeEducationalLevel(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\u2018\u2019']/g, '')
+    .replace(/[\s-]+/g, '_');
+  const aliases = new Map([
+    ['jhs', 'jhs'],
+    ['junior_high', 'jhs'],
+    ['junior_high_school', 'jhs'],
+    ['shs', 'shs'],
+    ['senior_high', 'shs'],
+    ['senior_high_school', 'shs'],
+    ['bachelor', 'bachelors'],
+    ['bachelors', 'bachelors'],
+    ['bachelor_degree', 'bachelors'],
+    ['master', 'masters'],
+    ['masters', 'masters'],
+    ['master_degree', 'masters'],
+    ['doctorate', 'doctorate'],
+    ['doctoral', 'doctorate'],
+    ['doctorate_degree', 'doctorate'],
+    ['phd', 'doctorate'],
+  ]);
+  return aliases.get(normalized) || '';
 }
 
-function makeResetToken() {
-  return randomBytes(24).toString('hex');
-}
-
-function cleanupOtpData() {
-  const now = Date.now();
-
-  for (const store of [otpStore, registrationOtpStore]) {
-    for (const [email, value] of store.entries()) {
-      if (value.expiresAt <= now) store.delete(email);
-    }
-  }
-
-  for (const [token, value] of resetTokenStore.entries()) {
-    if (value.expiresAt <= now) resetTokenStore.delete(token);
-  }
-}
-
-function putOtp(store, email, extra = {}) {
-  const otp = makeOtp();
-  const expiresAt = Date.now() + Number(OTP_TTL_MINUTES) * 60 * 1000;
-  store.set(email, { otp, expiresAt, attempts: 0, ...extra });
-  return otp;
-}
-
-async function sendOtpEmail({ email, otp, purpose }) {
-  if (!mailTransporter) {
-    throw new Error('SMTP is not configured.');
-  }
-
-  const ttlMinutes = Number(OTP_TTL_MINUTES);
-  const subjects = {
-    registration: 'Your Verifitor registration OTP',
-    login: 'Your Verifitor login OTP',
-    'password-reset': 'Your Verifitor password reset OTP',
-  };
-  const subject = subjects[purpose] || 'Your Verifitor OTP';
-  const text = `Your OTP is ${otp}. It expires in ${ttlMinutes} minutes.`;
-
-  await mailTransporter.sendMail({
-    from: SMTP_FROM,
-    to: email,
-    subject,
-    text,
-  });
-}
-
-async function sendOtpResponse(res, { email, otp, purpose }) {
-  if (OTP_DEV_MODE === 'true') {
-    return res.json({
-      success: true,
-      message: 'OTP generated (dev mode).',
-      otp,
-    });
-  }
-
-  if (!mailTransporter) {
-    return res.status(500).json({
-      success: false,
-      message: 'SMTP is not configured.',
-    });
-  }
-
-  try {
-    await sendOtpEmail({ email, otp, purpose });
-    return res.json({
-      success: true,
-      message: 'OTP sent to your email.',
-    });
-  } catch (error) {
-    console.error('OTP email failed:', error?.message || error);
-    return res.status(502).json({
-      success: false,
-      message: 'Failed to send OTP email. Check SMTP credentials and sender.',
-    });
-  }
+function isValidPastOrCurrentYear(value) {
+  const year = Number(value);
+  return /^\d{4}$/.test(value) &&
+    year >= 1950 && year <= new Date().getFullYear();
 }
 
 function validateRegisterPayload(body) {
-  const role = parseRegistrationRole(body.role);
+  const role = parseRegistrationRole(body.studentStatus || body.role);
+  const educationalLevel = normalizeEducationalLevel(body.educationalLevel);
   const firstName = String(body.firstName || '').trim();
   const lastName = String(body.lastName || '').trim();
   const personalEmail = normalizeEmail(body.email);
-  const schoolEmail = normalizeEmail(body.schoolEmail);
   const password = String(body.password || '');
-  const studentId = String(body.studentId || '').trim();
-  const yearLevel = String(body.yearLevel || '').trim();
-  const program = String(body.program || '').trim();
-  const isStudent = role === 'student';
-  const email = isStudent ? schoolEmail : personalEmail;
+  const submittedProgram = String(body.program || '').trim();
+  const submittedYearGraduated = String(body.yearGraduated || '').trim();
+  const submittedLastYearAttended = String(body.lastYearAttended || '').trim();
+  const submittedLastGradeLevelCompleted = String(
+    body.lastGradeLevelCompleted || '',
+  ).trim();
+  const submittedLastYearLevelCompleted = String(
+    body.lastYearLevelCompleted || '',
+  ).trim();
 
-  if (!role) {
+  if (role !== 'former_student' && role !== 'alumni') {
     return {
-      error:
-        "Please select Former/stopped student, Alumni, Master's, or Doctorate.",
+      error: 'Please select Former Student or Alumni.',
     };
+  }
+
+  if (!educationalLevel) {
+    return { error: 'Select a valid educational level.' };
   }
 
   if (firstName.length < 2 || firstName.length > 50 ||
@@ -2099,10 +1884,7 @@ function validateRegisterPayload(body) {
     return { error: 'Enter a valid last name (2-50 characters).' };
   }
 
-  if (isStudent && !emailRegex.test(schoolEmail)) {
-    return { error: 'Enter a valid school email address.' };
-  }
-  if (!isStudent && !emailRegex.test(personalEmail)) {
+  if (!isValidEmail(personalEmail)) {
     return { error: 'Enter a valid personal email address.' };
   }
 
@@ -2113,44 +1895,84 @@ function validateRegisterPayload(body) {
     };
   }
 
-  if (isStudent && !studentIdRegex.test(studentId)) {
-    return {
-      error: 'Student ID must be 4-30 letters, numbers, or hyphens.',
-    };
-  }
-
-  if (isStudent && !studentYearLevels.has(yearLevel)) {
-    return { error: 'Select a valid year level.' };
-  }
-
-  if (!isStudent) {
-    const graduationYear = Number(yearLevel);
-    const currentYear = new Date().getFullYear();
-    if (!/^\d{4}$/.test(yearLevel) ||
-        graduationYear < 1950 || graduationYear > currentYear) {
-      return { error: 'Select a valid graduation or last-attended year.' };
-    }
-  }
-
-  if (program.length < 2 || program.length > 100) {
+  const requiresProgram = new Set([
+    'bachelors',
+    'masters',
+    'doctorate',
+  ]).has(educationalLevel);
+  if (requiresProgram &&
+      (submittedProgram.length < 2 || submittedProgram.length > 100)) {
     return { error: 'Select a valid program.' };
   }
 
+  let yearGraduated = '';
+  let lastYearAttended = '';
+  let lastGradeLevelCompleted = '';
+  let lastYearLevelCompleted = '';
+
+  if (role === 'alumni') {
+    if (!isValidPastOrCurrentYear(submittedYearGraduated)) {
+      return { error: 'Select a valid graduation year.' };
+    }
+    yearGraduated = submittedYearGraduated;
+  } else {
+    if (!isValidPastOrCurrentYear(submittedLastYearAttended)) {
+      return { error: 'Select a valid last-attended year.' };
+    }
+    lastYearAttended = submittedLastYearAttended;
+
+    if (educationalLevel === 'jhs' || educationalLevel === 'shs') {
+      const acceptedGrades = educationalLevel === 'jhs'
+        ? new Set(['Grade 7', 'Grade 8', 'Grade 9', 'Grade 10'])
+        : new Set(['Grade 11', 'Grade 12']);
+      if (!acceptedGrades.has(submittedLastGradeLevelCompleted)) {
+        return { error: 'Select a valid last completed grade level.' };
+      }
+      lastGradeLevelCompleted = submittedLastGradeLevelCompleted;
+    } else {
+      const acceptedYearLevels = new Set([
+        '1st Year',
+        '2nd Year',
+        '3rd Year',
+        '4th Year',
+        '5th Year',
+      ]);
+      if (!acceptedYearLevels.has(submittedLastYearLevelCompleted)) {
+        return { error: 'Select a valid last completed year level.' };
+      }
+      lastYearLevelCompleted = submittedLastYearLevelCompleted;
+    }
+  }
+
+  const program = requiresProgram ? submittedProgram : '';
+  const yearLevel = role === 'alumni' ? yearGraduated : lastYearAttended;
+
   return {
     role,
+    studentStatus: role,
+    educationalLevel,
     firstName,
     lastName,
-    email,
+    email: personalEmail,
     password,
-    personalEmail: isStudent ? '' : personalEmail,
-    schoolEmail: isStudent ? schoolEmail : '',
-    studentId: isStudent ? studentId : '',
+    personalEmail,
+    schoolEmail: '',
+    studentId: '',
     yearLevel,
     program,
+    yearGraduated,
+    lastYearAttended,
+    lastGradeLevelCompleted,
+    lastYearLevelCompleted,
   };
 }
 
 function validateProfilePayload(body) {
+  if (Object.prototype.hasOwnProperty.call(body, 'currentPassword') ||
+      Object.prototype.hasOwnProperty.call(body, 'newPassword')) {
+    return { error: 'Use the dedicated password change endpoint.' };
+  }
+
   const firstName = String(body.firstName || '').trim();
   const lastName = String(body.lastName || '').trim();
   const schoolEmail = String(body.schoolEmail || '').trim();
@@ -2158,25 +1980,32 @@ function validateProfilePayload(body) {
   const studentId = String(body.studentId || '').trim();
   const yearLevel = String(body.yearLevel || '').trim();
   const program = String(body.program || '').trim();
-  const newPassword = String(body.newPassword || '').trim();
 
-  if (firstName.length < 2 || lastName.length < 2) {
-    return { error: 'First name and last name are required (min 2 chars).' };
+  if (firstName.length < 2 || firstName.length > 50 ||
+      !personNameRegex.test(firstName) ||
+      lastName.length < 2 || lastName.length > 50 ||
+      !personNameRegex.test(lastName)) {
+    return { error: 'Enter valid first and last names (2-50 characters).' };
   }
 
-  if (schoolEmail && !emailRegex.test(schoolEmail)) {
+  if (schoolEmail && !isValidEmail(schoolEmail)) {
     return { error: 'Invalid school email address.' };
   }
 
-  if (personalEmail && !emailRegex.test(personalEmail)) {
+  if (personalEmail && !isValidEmail(personalEmail)) {
     return { error: 'Invalid personal email address.' };
   }
 
-  if (newPassword && !passwordRegex.test(newPassword)) {
-    return {
-      error:
-        'Password must be at least 8 chars and include uppercase, lowercase, number, and special character.',
-    };
+  if (studentId && !studentIdRegex.test(studentId)) {
+    return { error: 'Student ID must be 4-30 letters, numbers, or hyphens.' };
+  }
+
+  if (yearLevel.length < 1 || yearLevel.length > 30) {
+    return { error: 'Select a valid academic year.' };
+  }
+
+  if (program.length < 2 || program.length > 100) {
+    return { error: 'Select a valid program.' };
   }
 
   return {
@@ -2187,13 +2016,10 @@ function validateProfilePayload(body) {
     studentId,
     yearLevel,
     program,
-    newPassword,
   };
 }
 
-app.get('/health', (_req, res) => {
-  res.json({ success: true, message: 'API is healthy' });
-});
+app.get('/health', healthCheck);
 
 app.get('/profile', requireAuth, async (req, res, next) => {
   try {
@@ -2213,6 +2039,7 @@ app.get('/profile', requireAuth, async (req, res, next) => {
 app.post(
   '/payments/receipt',
   requireAuth,
+  uploadLimiter,
   receiptUpload.single('receipt'),
   async (req, res, next) => {
     try {
@@ -2229,6 +2056,14 @@ app.post(
         return res.status(400).json({
           success: false,
           message: 'Receipt image is required.',
+        });
+      }
+
+      const imageMetadata = validateUploadedImage(req.file);
+      if (!imageMetadata) {
+        return res.status(400).json({
+          success: false,
+          message: 'The uploaded file is not a valid supported image.',
         });
       }
 
@@ -2249,20 +2084,51 @@ app.post(
           .json({ success: false, message: 'User not found.' });
       }
 
-      const docName = String(req.body?.docName || '').trim();
-      const purpose = String(req.body?.purpose || '').trim();
-      const amount = toNonNegativeNumber(req.body?.amount, 0);
-      const status = String(req.body?.status || 'pending_completion').trim();
+      const requestId = String(req.body?.requestId || '').trim();
+      if (!requestId || requestId.length > 100) {
+        return res.status(400).json({
+          success: false,
+          message: 'A valid document request is required.',
+        });
+      }
 
-      const linkedRequest = await findLatestRequestForUser(user, {
-        docName,
-        purpose,
-      });
-      const trueRequestId = linkedRequest
-        ? getRequestResponseId(linkedRequest)
-        : '';
+      const linkedRequest = await findLatestRequestForUser(user, { requestId });
+      if (!linkedRequest) {
+        return res.status(404).json({
+          success: false,
+          message: 'Document request not found.',
+        });
+      }
+      if (!isAwaitingPayment(linkedRequest) ||
+          firstNonEmptyString(linkedRequest.paymentReceiptId)) {
+        return res.status(409).json({
+          success: false,
+          message: 'Payment has already been submitted for this request.',
+        });
+      }
+      const trueRequestId = getRequestResponseId(linkedRequest);
+      const docName = firstNonEmptyString(
+        linkedRequest.docName,
+        linkedRequest.documentType,
+      );
+      const purpose = firstNonEmptyString(linkedRequest.purpose);
+      const documentPrice = toNonNegativeNumber(
+        linkedRequest.documentPrice,
+        getDocumentPrice(docName),
+      );
+      const processingFee = toNonNegativeNumber(
+        linkedRequest.processingFee,
+        defaultProcessingFee,
+      );
+      const amount = toNonNegativeNumber(
+        linkedRequest.totalAmount,
+        documentPrice + processingFee,
+      );
 
-      const uploadResult = await uploadReceiptToCloudinary(req.file);
+      const uploadResult = await uploadReceipt(
+        req.file,
+        imageMetadata,
+      );
       const receipt = buildReceiptRecord({
         user,
         paymentType,
@@ -2270,25 +2136,34 @@ app.post(
         purpose,
         trueRequestId, // Pass the real requestId
         amount,
-        status: status || 'pending_completion',
-        imageUrl: uploadResult?.secure_url || uploadResult?.url || '',
+        status: 'pending',
+        imageUrl: '',
         publicId: uploadResult?.public_id || '',
-        originalName: req.file.originalname,
-        mimeType: req.file.mimetype,
+        originalName: imageMetadata.originalName,
+        mimeType: imageMetadata.mimeType,
         size: req.file.size,
       });
 
-      const receiptId = await createReceiptRecord(receipt);
-      await updateRequestStatusForPayment({
-        userId: receipt.userId,
-        docName: docName,
-        purpose: purpose,
-        paymentType: receipt.paymentType,
-      });
+      let receiptId;
+      try {
+        receiptId = await commitPaymentReceipt({
+          user,
+          linkedRequest,
+          receipt,
+        });
+      } catch (error) {
+        if (error instanceof PaymentSubmissionConflictError) {
+          await deleteUploadedReceipt(uploadResult?.public_id);
+          return res.status(409).json({
+            success: false,
+            message: 'Payment has already been submitted for this request.',
+          });
+        }
+        throw error;
+      }
       return res.status(201).json({
         success: true,
         receiptId,
-        imageUrl: receipt.imageUrl,
       });
     } catch (error) {
       return next(error);
@@ -2307,6 +2182,14 @@ app.get('/receipts', requireAuth, async (req, res, next) => {
 
     const docName = String(req.query?.docName || '').trim();
     const purpose = String(req.query?.purpose || '').trim();
+    if (docName.length > 100 ||
+        purpose.length > 500 ||
+        /[\u0000-\u001f\u007f]/.test(docName + purpose)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid receipt search parameters.',
+      });
+    }
     const receipt = await findLatestReceiptForUser(user, { docName, purpose });
 
     return res.json({
@@ -2318,19 +2201,19 @@ app.get('/receipts', requireAuth, async (req, res, next) => {
   }
 });
 
-app.post('/requests', requireAuth, async (req, res, next) => {
+app.post('/requests', requireAuth, writeLimiter, async (req, res, next) => {
   try {
     const docName = String(req.body?.docName || '').trim();
     const purpose = String(req.body?.purpose || '').trim();
 
-    if (!docName) {
+    if (!docName || docName.length > 100 || /[\u0000-\u001f\u007f]/.test(docName)) {
       return res.status(400).json({
         success: false,
         message: 'Document name is required.',
       });
     }
 
-    if (!purpose) {
+    if (!purpose || purpose.length > 500 || /[\u0000-\u001f\u007f]/.test(purpose)) {
       return res.status(400).json({
         success: false,
         message: 'Purpose is required.',
@@ -2344,18 +2227,9 @@ app.post('/requests', requireAuth, async (req, res, next) => {
         .json({ success: false, message: 'User not found.' });
     }
 
-    const documentPrice = toNonNegativeNumber(
-      req.body?.documentPrice,
-      getDocumentPrice(docName),
-    );
-    const processingFee = toNonNegativeNumber(
-      req.body?.processingFee,
-      defaultProcessingFee,
-    );
-    const totalAmount = toNonNegativeNumber(
-      req.body?.totalAmount,
-      documentPrice + processingFee,
-    );
+    const documentPrice = getDocumentPrice(docName);
+    const processingFee = defaultProcessingFee;
+    const totalAmount = documentPrice + processingFee;
 
     const requestRecord = {
       requestId: makeRequestId(),
@@ -2377,8 +2251,12 @@ app.post('/requests', requireAuth, async (req, res, next) => {
       lastName: user.lastName || '',
       personalEmail: user.personalEmail || user.email || '',
       schoolEmail: user.schoolEmail || '',
-      yearGraduated:
-        normalizeRole(user.role) !== 'student' ? user.yearLevel || '' : '',
+      studentStatus: user.studentStatus || normalizeRole(user.role),
+      educationalLevel: user.educationalLevel || '',
+      yearGraduated: user.yearGraduated || '',
+      lastYearAttended: user.lastYearAttended || '',
+      lastGradeLevelCompleted: user.lastGradeLevelCompleted || '',
+      lastYearLevelCompleted: user.lastYearLevelCompleted || '',
       program: user.program || '',
       docName,
       documentPrice,
@@ -2391,22 +2269,26 @@ app.post('/requests', requireAuth, async (req, res, next) => {
 
     const requestId = await createRequestRecord(requestRecord);
     
-    if (dbEnabled) {
-      await notifications.insertOne({
-        message: `Your document request for ${docName} has been submitted!`,
-        isRead: false,
-        email: user.email || '',
-        userId: user._id || user.id,
-        date: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      });
-    }
+    const notificationCreatedAt = new Date().toISOString();
+    await createNotificationRecord({
+      title: 'Request submitted',
+      message:
+        `Your request for ${docName} was submitted. ` +
+        'Status: pending for payment. Follow updates in Tracking.',
+      isRead: false,
+      email: normalizeEmail(user.email),
+      userId: user._id || user.id,
+      createdAt: notificationCreatedAt,
+      updatedAt: notificationCreatedAt,
+    });
 
     return res.status(201).json({
       success: true,
       requestId: String(requestId),
-      request: { ...requestRecord, id: String(requestId) },
+      request: buildRequestResponse({
+        ...requestRecord,
+        _id: requestId,
+      }),
     });
   } catch (error) {
     return next(error);
@@ -2442,6 +2324,9 @@ app.get('/notifications', requireAuth, async (req, res, next) => {
         .json({ success: false, message: 'User not found.' });
     }
 
+    // Older administration tools update refunds directly in MongoDB. Repair
+    // any missing status event before returning the notification feed.
+    await reconcileRefundNotificationsForUser(user);
     const records = await listNotificationsForUser(user, req.query?.limit);
     return res.json({
       success: true,
@@ -2452,14 +2337,19 @@ app.get('/notifications', requireAuth, async (req, res, next) => {
   }
 });
 
-app.post('/notifications', requireNotificationSender, async (req, res, next) => {
+app.post(
+  '/notifications',
+  requireNotificationSender,
+  writeLimiter,
+  async (req, res, next) => {
   try {
     const title = String(req.body?.title || '').trim();
     const message = String(req.body?.message || '').trim();
     const emailInput = normalizeEmail(req.body?.email);
     const userIdInput = String(req.body?.userId || '').trim();
 
-    if (!title || !message) {
+    if (!title || title.length > 120 || !message || message.length > 1000 ||
+        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(title + message)) {
       return res.status(400).json({
         success: false,
         message: 'Notification title and message are required.',
@@ -2471,13 +2361,13 @@ app.post('/notifications', requireNotificationSender, async (req, res, next) => 
       user = await getUserFromAuth(req.auth);
     }
 
-    if (emailInput && emailRegex.test(emailInput)) {
+    if (emailInput && isValidEmail(emailInput)) {
       user = (await getUserByEmail(emailInput)) || user;
     }
 
     const resolvedEmail =
       (user?.email && normalizeEmail(user.email)) ||
-      (emailRegex.test(emailInput) ? emailInput : '');
+      (isValidEmail(emailInput) ? emailInput : '');
 
     let resolvedUserId = null;
     const rawUserId = user?._id || user?.id || userIdInput || null;
@@ -2541,7 +2431,8 @@ app.get('/transactions', requireAuth, async (req, res, next) => {
   } catch (error) {
     return next(error);
   }
-});
+  },
+);
 
 app.get('/refunds', requireAuth, async (req, res, next) => {
   try {
@@ -2562,7 +2453,78 @@ app.get('/refunds', requireAuth, async (req, res, next) => {
   }
 });
 
-app.post('/refunds', requireAuth, async (req, res, next) => {
+app.patch(
+  '/refunds/:refundId/status',
+  requireNotificationSender,
+  writeLimiter,
+  async (req, res, next) => {
+    try {
+      const refundId = String(req.params?.refundId || '').trim();
+      const status = normalizeRefundStatus(req.body?.status);
+      const remarks = String(req.body?.remarks || '').trim();
+
+      if (!refundId || refundId.length > 200) {
+        return res.status(400).json({
+          success: false,
+          message: 'A valid refund ID is required.',
+        });
+      }
+      if (!status) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'Status must be pending, approved, processing, completed, refunded, or rejected.',
+        });
+      }
+      if (remarks.length > 500) {
+        return res.status(400).json({
+          success: false,
+          message: 'Refund status remarks must be 500 characters or fewer.',
+        });
+      }
+
+      const refundRecord = await findRefundById(refundId);
+      if (!refundRecord) {
+        return res.status(404).json({
+          success: false,
+          message: 'Refund request not found.',
+        });
+      }
+
+      const updatedAt = new Date().toISOString();
+      const updatedRefund = await updateRefundRecordStatus(
+        refundRecord,
+        status,
+        remarks,
+        updatedAt,
+      );
+      if (!updatedRefund) {
+        return res.status(409).json({
+          success: false,
+          message: 'Refund status could not be updated.',
+        });
+      }
+
+      await syncLinkedRefundStatus(updatedRefund, status, updatedAt);
+      const notification = buildRefundStatusNotification(updatedRefund);
+      let notificationCreated = false;
+      if (notification) {
+        const result = await createNotificationRecordOnce(notification);
+        notificationCreated = result.created;
+      }
+
+      return res.json({
+        success: true,
+        refund: buildRefundResponse(updatedRefund),
+        notificationCreated,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+app.post('/refunds', requireAuth, writeLimiter, async (req, res, next) => {
   try {
     const user = await getUserFromAuth(req.auth);
     if (!user) {
@@ -2685,6 +2647,7 @@ app.post('/refunds', requireAuth, async (req, res, next) => {
     );
     const rejectionRemarks = getRecordRemarks(transaction, linkedRequest);
     const refundRecord = {
+      refundId: makeRefundId(),
       transactionId: canonicalTransactionId,
       requestId: linkedRequestId,
       userId: user._id || user.id,
@@ -2731,6 +2694,7 @@ app.post('/refunds', requireAuth, async (req, res, next) => {
 app.post(
   '/profile/photo',
   requireAuth,
+  uploadLimiter,
   profileUpload.single('photo'),
   async (req, res, next) => {
     try {
@@ -2750,6 +2714,14 @@ app.post(
         });
       }
 
+      const imageMetadata = validateUploadedImage(req.file);
+      if (!imageMetadata) {
+        return res.status(400).json({
+          success: false,
+          message: 'The uploaded file is not a valid supported image.',
+        });
+      }
+
       const user = await getUserFromAuth(req.auth);
       if (!user) {
         return res
@@ -2757,7 +2729,10 @@ app.post(
           .json({ success: false, message: 'User not found.' });
       }
 
-      const uploadResult = await uploadProfilePhotoToCloudinary(req.file);
+      const uploadResult = await uploadProfilePhoto(
+        req.file,
+        imageMetadata,
+      );
       const profileImageUrl =
         uploadResult?.secure_url || uploadResult?.url || '';
       const profileImagePublicId = uploadResult?.public_id || '';
@@ -2768,7 +2743,7 @@ app.post(
         profilePic: profileImageUrl,
       });
 
-      const refreshed = (await getUserByEmail(user.email)) || {
+      const refreshed = (await getUserById(String(user._id || user.id || ''))) || {
         ...user,
         profileImageUrl,
         profilePic: profileImageUrl,
@@ -2785,7 +2760,7 @@ app.post(
   },
 );
 
-app.put('/profile', requireAuth, async (req, res, next) => {
+app.put('/profile', requireAuth, writeLimiter, async (req, res, next) => {
   try {
     const parsed = validateProfilePayload(req.body || {});
     if (parsed.error) {
@@ -2801,91 +2776,46 @@ app.put('/profile', requireAuth, async (req, res, next) => {
 
     const role = normalizeRole(user.role);
     const isStudent = role === 'student';
+    const submittedEmail = normalizeEmail(
+      isStudent ? parsed.schoolEmail : parsed.personalEmail,
+    );
+    if (submittedEmail !== normalizeEmail(user.email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Login email changes require a separate verified process.',
+      });
+    }
 
-    if (isStudent) {
-      const schoolEmail = normalizeEmail(parsed.schoolEmail || '');
-      if (!emailRegex.test(schoolEmail)) {
+    if (isStudent &&
+        (!studentIdRegex.test(parsed.studentId) ||
+          !studentYearLevels.has(parsed.yearLevel))) {
+      return res.status(400).json({
+        success: false,
+        message: 'Enter valid student ID and year-level details.',
+      });
+    }
+    if (!isStudent) {
+      const year = Number(parsed.yearLevel);
+      const currentYear = new Date().getFullYear();
+      if (!/^\d{4}$/.test(parsed.yearLevel) || year < 1950 || year > currentYear) {
         return res.status(400).json({
           success: false,
-          message: 'School email is required for student accounts.',
+          message: 'Select a valid graduation or last-attended year.',
         });
       }
 
-      if (!parsed.studentId) {
-        return res.status(400).json({
-          success: false,
-          message: 'Student ID is required for student accounts.',
-        });
-      }
-
-      if (schoolEmail !== user.email) {
-        const existing = await getUserByEmail(schoolEmail);
-        if (
-          existing &&
-          String(existing._id || existing.id || '') !==
-            String(user._id || user.id || '')
-        ) {
-          return res
-            .status(409)
-            .json({ success: false, message: 'Email already exists.' });
-        }
-      }
-
-      const updates = {
-        firstName: parsed.firstName,
-        lastName: parsed.lastName,
-        schoolEmail,
-        personalEmail: '',
-        email: schoolEmail,
-        studentId: parsed.studentId,
-        yearLevel: parsed.yearLevel,
-        program: parsed.program,
-      };
-
-      await updateUserProfile(user, updates);
-    } else {
-      const nextPersonalEmail =
-        parsed.personalEmail || user.personalEmail || user.email;
-      const nextEmail = normalizeEmail(nextPersonalEmail);
-      if (!emailRegex.test(nextEmail)) {
-        return res
-          .status(400)
-          .json({ success: false, message: 'Invalid login email address.' });
-      }
-
-      if (nextEmail !== user.email) {
-        const existing = await getUserByEmail(nextEmail);
-        if (
-          existing &&
-          String(existing._id || existing.id || '') !==
-            String(user._id || user.id || '')
-        ) {
-          return res
-            .status(409)
-            .json({ success: false, message: 'Email already exists.' });
-        }
-      }
-
-      const updates = {
-        firstName: parsed.firstName,
-        lastName: parsed.lastName,
-        schoolEmail: '',
-        personalEmail: nextPersonalEmail,
-        email: nextEmail,
-        studentId: '',
-        yearLevel: parsed.yearLevel,
-        program: parsed.program,
-      };
-
-      await updateUserProfile(user, updates);
     }
 
-    if (parsed.newPassword) {
-      const passwordHash = await bcrypt.hash(parsed.newPassword, 12);
-      await updateUserPassword(user.email, passwordHash);
-    }
+    const updates = {
+      firstName: parsed.firstName,
+      lastName: parsed.lastName,
+      studentId: isStudent ? parsed.studentId : '',
+      yearLevel: parsed.yearLevel,
+      program: parsed.program,
+    };
+    await updateUserProfile(user, updates);
 
-    const refreshed = await getUserByEmail(user.email);
+    const refreshed = await getUserById(String(user._id || user.id || ''));
     return res.json({
       success: true,
       message: 'Profile updated.',
@@ -2896,58 +2826,95 @@ app.put('/profile', requireAuth, async (req, res, next) => {
   }
 });
 
-app.post('/auth/register', async (req, res, next) => {
-  try {
-    const parsed = validateRegisterPayload(req.body || {});
-    if (parsed.error) {
-      return res.status(400).json({ success: false, message: parsed.error });
-    }
+app.put(
+  '/profile/password',
+  requireAuth,
+  writeLimiter,
+  async (req, res, next) => {
+    try {
+      const currentPassword = String(req.body?.currentPassword || '');
+      const newPassword = String(req.body?.newPassword || '');
 
-    const role = parsed.role;
+      if (!currentPassword || currentPassword.length > 72) {
+        return res.status(400).json({
+          success: false,
+          message: 'Current password is required.',
+        });
+      }
+      if (!passwordRegex.test(newPassword)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'Password must be 8-72 characters with uppercase, lowercase, number, and special character, without spaces.',
+        });
+      }
+      if (currentPassword === newPassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'New password must be different from your current password.',
+        });
+      }
 
-    const mailboxCheck = await validateEmailWithMailboxlayer(parsed.email);
-    if (!mailboxCheck.isValid) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email is not deliverable. Please use a valid email.',
+      const user = await getUserFromAuth(req.auth);
+      if (!user) {
+        return res
+          .status(404)
+          .json({ success: false, message: 'User not found.' });
+      }
+
+      const currentHash = await ensurePasswordHash(user);
+      const currentPasswordMatches = currentHash
+        ? await bcrypt.compare(currentPassword, currentHash)
+        : false;
+      if (!currentPasswordMatches) {
+        return res.status(403).json({
+          success: false,
+          message: 'Current password is incorrect.',
+        });
+      }
+
+      const passwordHash = await bcrypt.hash(newPassword, 12);
+      const passwordUpdated = await updateUserPassword(
+        user,
+        passwordHash,
+        Number(user.sessionVersion || 0),
+      );
+      if (!passwordUpdated) {
+        return res.status(409).json({
+          success: false,
+          message: 'Account security state changed. Please log in again.',
+        });
+      }
+
+      const refreshed = await getUserById(String(user._id || user.id || ''));
+      const session = refreshed ? await issueTokensForUser(refreshed) : null;
+      if (!refreshed || !session) {
+        return res.status(409).json({
+          success: false,
+          message: 'Account security state changed. Please log in again.',
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Password changed successfully.',
+        user: buildProfileResponse(refreshed),
+        ...session,
       });
+    } catch (error) {
+      return next(error);
     }
+  },
+);
 
-    const existing = await getUserByEmail(parsed.email);
-    if (existing) {
-      return res
-        .status(409)
-        .json({ success: false, message: 'Email already exists.' });
-    }
-
-    const passwordHash = await bcrypt.hash(parsed.password, 12);
-
-    const result = await createUserDocument({
-      firstName: parsed.firstName,
-      lastName: parsed.lastName,
-      email: parsed.email,
-      personalEmail: parsed.personalEmail,
-      passwordHash,
-      role,
-      schoolEmail: parsed.schoolEmail,
-      studentId: parsed.studentId,
-      yearLevel: parsed.yearLevel,
-      course: parsed.program,
-      program: parsed.program, // kept for backward compatibility with mobile code
-      createdAt: new Date().toISOString(),
-    });
-
-    return res.status(201).json({
-      success: true,
-      userId: result.insertedId,
-      message: 'Account created successfully.',
-    });
-  } catch (error) {
-    return next(error);
-  }
+app.post('/auth/register', (_req, res) => {
+  return res.status(410).json({
+    success: false,
+    message: 'Email verification is required before registration.',
+  });
 });
 
-app.post('/auth/register/request-otp', async (req, res, next) => {
+app.post('/auth/register/request-otp', otpRequestLimiter, async (req, res, next) => {
   try {
     cleanupOtpData();
 
@@ -2958,6 +2925,14 @@ app.post('/auth/register/request-otp', async (req, res, next) => {
 
     const role = parsed.role;
 
+    const pendingOtp = await getChallenge(registrationOtpStore, parsed.email);
+    if (pendingOtp?.lastSentAt && Date.now() - pendingOtp.lastSentAt < 30 * 1000) {
+      return res.status(429).json({
+        success: false,
+        message: 'A verification code was recently sent. Please wait.',
+      });
+    }
+
     const mailboxCheck = await validateEmailWithMailboxlayer(parsed.email);
     if (!mailboxCheck.isValid) {
       return res.status(400).json({
@@ -2973,9 +2948,15 @@ app.post('/auth/register/request-otp', async (req, res, next) => {
         .json({ success: false, message: 'Email already exists.' });
     }
 
-    const otp = putOtp(registrationOtpStore, parsed.email, {
+    const { password, ...registrationPayload } = parsed;
+    const passwordHash = await bcrypt.hash(password, 12);
+    const challengeToken = makeChallengeToken();
+    const otp = await putOtp(registrationOtpStore, parsed.email, {
+      lastSentAt: Date.now(),
+      challengeTokenHash: hashChallengeToken('registration', challengeToken),
       payload: {
-        ...parsed,
+        ...registrationPayload,
+        passwordHash,
         role,
       },
     });
@@ -2983,48 +2964,75 @@ app.post('/auth/register/request-otp', async (req, res, next) => {
       email: parsed.email,
       otp,
       purpose: 'registration',
+      challengeToken,
     });
   } catch (error) {
     return next(error);
   }
 });
 
-app.post('/auth/register/verify-otp', async (req, res, next) => {
+app.post('/auth/register/verify-otp', otpVerifyLimiter, async (req, res, next) => {
   try {
     cleanupOtpData();
 
     const email = normalizeEmail(req.body?.email);
     const otp = String(req.body?.otp || '').trim();
+    const challengeToken = String(req.body?.challengeToken || '').trim();
 
-    if (!emailRegex.test(email) || !/^\d{6}$/.test(otp)) {
+    if (!isValidEmail(email) ||
+        !/^\d{6}$/.test(otp) ||
+        !/^[a-f0-9]{64}$/.test(challengeToken)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid email or OTP format.',
+        message: 'Invalid verification request.',
       });
     }
 
-    const record = registrationOtpStore.get(email);
+    const record = await getChallenge(registrationOtpStore, email);
     if (!record || record.expiresAt <= Date.now()) {
-      registrationOtpStore.delete(email);
       return res.status(400).json({
         success: false,
         message: 'OTP expired or not found. Please request a new one.',
       });
     }
 
-    if (record.otp !== otp) {
-      record.attempts += 1;
-      registrationOtpStore.set(email, record);
-
-      if (record.attempts >= 5) {
-        registrationOtpStore.delete(email);
-      }
-
-      return res.status(401).json({ success: false, message: 'Invalid OTP.' });
+    if (Number(record.attempts || 0) >= maxOtpVerificationAttempts) {
+      await consumeChallenge(registrationOtpStore, email, record.otpHash);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired verification code.',
+      });
     }
 
-    const payload = record.payload;
-    registrationOtpStore.delete(email);
+    if (!challengeTokenMatches(record, 'registration', challengeToken) ||
+        !otpMatches(record, email, otp)) {
+      const attempts = await recordFailedChallengeAttempt(
+        registrationOtpStore,
+        email,
+        record.otpHash,
+      );
+      if (attempts >= maxOtpVerificationAttempts) {
+        await consumeChallenge(registrationOtpStore, email, record.otpHash);
+      }
+
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired verification code.',
+      });
+    }
+
+    const consumed = await consumeChallenge(
+      registrationOtpStore,
+      email,
+      record.otpHash,
+    );
+    if (!consumed) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired verification code.',
+      });
+    }
+    const payload = consumed.payload;
 
     if (!payload) {
       return res
@@ -3047,19 +3055,32 @@ app.post('/auth/register/verify-otp', async (req, res, next) => {
       });
     }
 
-    const passwordHash = await bcrypt.hash(payload.password, 12);
+    if (!/^\$2[aby]\$12\$/.test(String(payload.passwordHash || ''))) {
+      return res.status(400).json({
+        success: false,
+        message: 'Registration challenge is invalid. Please start again.',
+      });
+    }
     const result = await createUserDocument({
       firstName: payload.firstName,
       lastName: payload.lastName,
       email: normalizeEmail(payload.email),
       personalEmail: normalizeEmail(payload.personalEmail || ''),
-      passwordHash,
+      passwordHash: payload.passwordHash,
       role,
       schoolEmail: normalizeEmail(payload.schoolEmail || ''),
       studentId: payload.studentId || '',
+      studentStatus: role,
+      educationalLevel: payload.educationalLevel,
       yearLevel: payload.yearLevel,
       course: payload.program,
       program: payload.program, // kept for backward compatibility with mobile code
+      yearGraduated: payload.yearGraduated || '',
+      lastYearAttended: payload.lastYearAttended || '',
+      lastGradeLevelCompleted: payload.lastGradeLevelCompleted || '',
+      lastYearLevelCompleted: payload.lastYearLevelCompleted || '',
+      emailVerifiedAt: new Date().toISOString(),
+      sessionVersion: 0,
       createdAt: new Date().toISOString(),
     });
 
@@ -3073,39 +3094,38 @@ app.post('/auth/register/verify-otp', async (req, res, next) => {
   }
 });
 
-app.post('/auth/login', async (req, res, next) => {
+app.post(
+  '/auth/login',
+  loginLimiter,
+  async (req, res, next) => {
   try {
     const email = normalizeEmail(req.body?.email);
-    const password = String(req.body?.password || '').trim();
+    const password = String(req.body?.password || '');
 
-    if (!emailRegex.test(email) || !password) {
+    if (!isValidEmail(email) || !password || password.length > 72) {
       return res
         .status(400)
         .json({ success: false, message: 'Invalid email or password format.' });
     }
 
     const user = await getUserByEmail(email);
-    if (!user) {
-      return res
-        .status(401)
-        .json({ success: false, message: 'Invalid email or password.' });
-    }
-
-    const passwordHash = await ensurePasswordHash(user);
-    if (!passwordHash) {
-      return res
-        .status(401)
-        .json({ success: false, message: 'Invalid email or password.' });
-    }
-
+    const passwordHash = user
+      ? (await ensurePasswordHash(user)) || dummyPasswordHash
+      : dummyPasswordHash;
     const isMatch = await bcrypt.compare(password, passwordHash);
-    if (!isMatch) {
+    if (!user || !isMatch) {
       return res
         .status(401)
         .json({ success: false, message: 'Invalid email or password.' });
     }
 
     const session = await issueTokensForUser(user);
+    if (!session) {
+      return res.status(409).json({
+        success: false,
+        message: 'Account security state changed. Please try again.',
+      });
+    }
     return res.json({
       success: true,
       message: 'Login successful.',
@@ -3122,7 +3142,7 @@ app.post('/auth/refresh', async (req, res, next) => {
     const email = normalizeEmail(req.body?.email);
     const refreshToken = String(req.body?.refreshToken || '').trim();
 
-    if (!emailRegex.test(email) || !refreshToken) {
+    if (!isValidEmail(email) || !/^[a-f0-9]{96}$/.test(refreshToken)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid email or refresh token.',
@@ -3138,15 +3158,27 @@ app.post('/auth/refresh', async (req, res, next) => {
 
     const tokenHash = hashRefreshToken(refreshToken);
     const record = getRefreshTokenRecord(user, tokenHash);
-    if (!record || isRefreshTokenExpired(record)) {
-      await revokeRefreshToken(email, tokenHash);
+    if (!record || isRefreshTokenExpired(record) ||
+        Number(record.sessionVersion || 0) !== Number(user.sessionVersion || 0) ||
+        refreshTokenPredatesSecurityChange(user, record)) {
+      await revokeRefreshToken(user, tokenHash);
       return res
         .status(401)
-        .json({ success: false, message: 'Refresh token expired.' });
+        .json({ success: false, message: 'Invalid refresh session.' });
     }
 
-    await revokeRefreshToken(email, tokenHash);
+    const consumed = await revokeRefreshToken(user, tokenHash);
+    if (!consumed) {
+      return res
+        .status(401)
+        .json({ success: false, message: 'Invalid refresh session.' });
+    }
     const session = await issueTokensForUser(user);
+    if (!session) {
+      return res
+        .status(401)
+        .json({ success: false, message: 'Invalid refresh session.' });
+    }
 
     return res.json({
       success: true,
@@ -3163,15 +3195,18 @@ app.post('/auth/logout', async (req, res, next) => {
     const email = normalizeEmail(req.body?.email);
     const refreshToken = String(req.body?.refreshToken || '').trim();
 
-    if (!emailRegex.test(email) || !refreshToken) {
+    if (!isValidEmail(email) || !/^[a-f0-9]{96}$/.test(refreshToken)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid email or refresh token.',
       });
     }
 
-    const tokenHash = hashRefreshToken(refreshToken);
-    await revokeRefreshToken(email, tokenHash);
+    const user = await getUserByEmail(email);
+    if (user) {
+      const tokenHash = hashRefreshToken(refreshToken);
+      await revokeRefreshToken(user, tokenHash);
+    }
 
     return res.json({ success: true, message: 'Logged out.' });
   } catch (error) {
@@ -3179,93 +3214,162 @@ app.post('/auth/logout', async (req, res, next) => {
   }
 });
 
-app.post('/auth/forgot-password/request-otp', async (req, res, next) => {
+app.post(
+  '/auth/forgot-password/request-otp',
+  otpRequestLimiter,
+  async (req, res, next) => {
   try {
     cleanupOtpData();
 
     const email = normalizeEmail(req.body?.email);
-    if (!emailRegex.test(email)) {
+    if (!isValidEmail(email)) {
       return res.status(400).json({ success: false, message: 'Invalid email.' });
     }
 
+    const challengeToken = makeChallengeToken();
     const user = await getUserByEmail(email);
     if (!user) {
       return res.json({
         success: true,
         message:
           'If an account exists for this email, a verification code has been sent.',
-        expiresInSeconds: Number(OTP_TTL_MINUTES) * 60,
+        challengeToken,
+        expiresInSeconds: otpTtlMinutes * 60,
         resendAfterSeconds: 30,
       });
     }
 
-    const pendingOtp = otpStore.get(email);
+    const pendingOtp = await getChallenge(otpStore, email);
     const lastSentAt = Number(pendingOtp?.lastSentAt || 0);
     const elapsedSinceSend = Date.now() - lastSentAt;
     if (lastSentAt && elapsedSinceSend < 30 * 1000) {
+      await setChallenge(otpStore, email, {
+        ...pendingOtp,
+        challengeTokenHash: hashChallengeToken(
+          'password-reset',
+          challengeToken,
+        ),
+      });
       return res.json({
         success: true,
-        message: 'A verification code was recently sent.',
-        expiresInSeconds: Math.max(
-          0,
-          Math.ceil((pendingOtp.expiresAt - Date.now()) / 1000),
-        ),
-        resendAfterSeconds: Math.ceil((30 * 1000 - elapsedSinceSend) / 1000),
+        message:
+          'If an account exists for this email, a verification code has been sent.',
+        challengeToken,
+        expiresInSeconds: otpTtlMinutes * 60,
+        resendAfterSeconds: 30,
       });
     }
 
-    const otp = putOtp(otpStore, email, { lastSentAt: Date.now() });
-
-    const response = await sendOtpResponse(res, {
-      email,
-      otp,
-      purpose: 'password-reset',
+    const otp = await putOtp(otpStore, email, {
+      lastSentAt: Date.now(),
+      userId: String(user._id || user.id || ''),
+      sessionVersion: Number(user.sessionVersion || 0),
+      challengeTokenHash: hashChallengeToken(
+        'password-reset',
+        challengeToken,
+      ),
     });
-    return response;
+    if (OTP_DEV_MODE && !isProduction) {
+      return res.json({
+        success: true,
+        message: 'OTP generated (dev mode).',
+        otp,
+        challengeToken,
+        expiresInSeconds: otpTtlMinutes * 60,
+        resendAfterSeconds: 30,
+      });
+    }
+    try {
+      await sendOtpEmail({ email, otp, purpose: 'password-reset' });
+    } catch (error) {
+      console.error('Password reset email delivery failed.');
+    }
+    return res.json({
+      success: true,
+      message:
+        'If an account exists for this email, a verification code has been sent.',
+      challengeToken,
+      expiresInSeconds: otpTtlMinutes * 60,
+      resendAfterSeconds: 30,
+    });
   } catch (error) {
     return next(error);
   }
-});
+  },
+);
 
-app.post('/auth/forgot-password/verify-otp', async (req, res, next) => {
+app.post(
+  '/auth/forgot-password/verify-otp',
+  otpVerifyLimiter,
+  async (req, res, next) => {
   try {
     cleanupOtpData();
 
     const email = normalizeEmail(req.body?.email);
     const otp = String(req.body?.otp || '').trim();
+    const challengeToken = String(req.body?.challengeToken || '').trim();
 
-    if (!emailRegex.test(email) || !/^\d{6}$/.test(otp)) {
+    if (!isValidEmail(email) ||
+        !/^\d{6}$/.test(otp) ||
+        !/^[a-f0-9]{64}$/.test(challengeToken)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid email or OTP format.',
+        message: 'Invalid verification request.',
       });
     }
 
-    const record = otpStore.get(email);
+    const record = await getChallenge(otpStore, email);
     if (!record || record.expiresAt <= Date.now()) {
-      otpStore.delete(email);
       return res.status(400).json({
         success: false,
         message: 'OTP expired or not found. Please request a new one.',
       });
     }
 
-    if (record.otp !== otp) {
-      record.attempts += 1;
-      otpStore.set(email, record);
-
-      if (record.attempts >= 5) {
-        otpStore.delete(email);
-      }
-
-      return res.status(401).json({ success: false, message: 'Invalid OTP.' });
+    if (Number(record.attempts || 0) >= maxOtpVerificationAttempts) {
+      await consumeChallenge(otpStore, email, record.otpHash);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired verification code.',
+      });
     }
 
-    otpStore.delete(email);
+    if (!challengeTokenMatches(record, 'password-reset', challengeToken) ||
+        !otpMatches(record, email, otp)) {
+      const attempts = await recordFailedChallengeAttempt(
+        otpStore,
+        email,
+        record.otpHash,
+      );
+      if (attempts >= maxOtpVerificationAttempts) {
+        await consumeChallenge(otpStore, email, record.otpHash);
+      }
+
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired verification code.',
+      });
+    }
+
+    const consumed = await consumeChallenge(otpStore, email, record.otpHash);
+    if (!consumed) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired verification code.',
+      });
+    }
+    const challengeUser = await getUserById(String(consumed.userId || ''));
+    if (!challengeUser ||
+        Number(challengeUser.sessionVersion || 0) !==
+          Number(consumed.sessionVersion || 0)) {
+      return res.status(401).json({ success: false, message: 'Invalid OTP.' });
+    }
     const resetToken = makeResetToken();
-    resetTokenStore.set(resetToken, {
-      email,
-      expiresAt: Date.now() + Number(OTP_TTL_MINUTES) * 60 * 1000,
+    const resetTokenHash = hashChallenge('reset-token', resetToken);
+    await setChallenge(resetTokenStore, resetTokenHash, {
+      userId: consumed.userId,
+      sessionVersion: Number(consumed.sessionVersion || 0),
+      expiresAt: Date.now() + otpTtlMinutes * 60 * 1000,
     });
 
     return res.json({
@@ -3276,7 +3380,8 @@ app.post('/auth/forgot-password/verify-otp', async (req, res, next) => {
   } catch (error) {
     return next(error);
   }
-});
+  },
+);
 
 app.post('/auth/forgot-password/reset', async (req, res, next) => {
   try {
@@ -3285,7 +3390,7 @@ app.post('/auth/forgot-password/reset', async (req, res, next) => {
     const resetToken = String(req.body?.resetToken || '').trim();
     const newPassword = String(req.body?.newPassword || '');
 
-    if (!resetToken) {
+    if (!/^[a-f0-9]{64}$/.test(resetToken)) {
       return res
         .status(400)
         .json({ success: false, message: 'Missing reset token.' });
@@ -3299,20 +3404,36 @@ app.post('/auth/forgot-password/reset', async (req, res, next) => {
       });
     }
 
-    const tokenRecord = resetTokenStore.get(resetToken);
-    if (!tokenRecord || tokenRecord.expiresAt <= Date.now()) {
-      resetTokenStore.delete(resetToken);
+    const resetTokenHash = hashChallenge('reset-token', resetToken);
+    const tokenRecord = await consumeChallenge(resetTokenStore, resetTokenHash);
+    if (!tokenRecord) {
       return res.status(401).json({
         success: false,
         message: 'Reset token is invalid or expired.',
       });
     }
 
+    const user = await getUserById(String(tokenRecord.userId || ''));
+    if (!user ||
+        Number(user.sessionVersion || 0) !==
+          Number(tokenRecord.sessionVersion || 0)) {
+      return res.status(401).json({
+        success: false,
+        message: 'Reset token is invalid or expired.',
+      });
+    }
     const passwordHash = await bcrypt.hash(newPassword, 12);
-    await updateUserPassword(tokenRecord.email, passwordHash);
-    await revokeAllRefreshTokens(tokenRecord.email);
-
-    resetTokenStore.delete(resetToken);
+    const passwordUpdated = await updateUserPassword(
+      user,
+      passwordHash,
+      Number(tokenRecord.sessionVersion || 0),
+    );
+    if (!passwordUpdated) {
+      return res.status(401).json({
+        success: false,
+        message: 'Reset token is invalid or expired.',
+      });
+    }
 
     return res.json({
       success: true,
@@ -3323,92 +3444,22 @@ app.post('/auth/forgot-password/reset', async (req, res, next) => {
   }
 });
 
-app.use((err, _req, res, _next) => {
-  if (err instanceof multer.MulterError) {
-    return res.status(400).json({
-      success: false,
-      message: err.code === 'LIMIT_FILE_SIZE'
-        ? 'Receipt image is too large.'
-        : err.message,
-    });
-  }
-  console.error(err);
-  res.status(500).json({ 
-    success: false, 
-    message: err.message || 'Internal server error.',
-    stack: err.stack 
-  });
-});
-async function start() {
-  if (dbEnabled) {
-    try {
-      await client.connect();
-      const db = client.db(MONGODB_DB_NAME);
-      alumniUsers = db.collection(alumniCollectionName);
-      studentUsers = db.collection(studentsCollectionName);
-      receipts = db.collection('transactions');
-      requests = db.collection('requests');
-      notifications = db.collection('notifications');
-      transactions = db.collection('transactions');
-      refunds = db.collection('refunds');
-      try {
-        for (const collection of [alumniUsers, studentUsers]) {
-          try {
-            await collection.dropIndex('username_1');
-          } catch (err) {
-            // Index doesn't exist, that's fine
-          }
-          await collection.createIndex({ email: 1 }, { unique: true });
-          await collection.createIndex(
-            { username: 1 },
-            { unique: true, sparse: true },
-          );
-        }
-        await receipts.createIndex({ userId: 1, createdAt: -1 });
-        await requests.createIndex({ userId: 1, createdAt: -1 });
-        await requests.createIndex({ status: 1, createdAt: -1 });
-        await notifications.createIndex({ userId: 1, createdAt: -1 });
-        await notifications.createIndex({ email: 1, createdAt: -1 });
-        await transactions.createIndex({ userId: 1, createdAt: -1 });
-        await transactions.createIndex({ email: 1, createdAt: -1 });
-        await refunds.createIndex(
-          { transactionId: 1, userId: 1 },
-          { unique: true },
-        );
-        await normalizeEmailsInCollection(studentUsers, 'students');
-        await normalizeEmailsInCollection(alumniUsers, 'alumni');
-      } catch (err) {
-        console.warn('Could not create indexes (permission denied):', err.message);
-      }
-    } catch (error) {
-      console.error(`MongoDB connection failed: ${error.message}`);
-    }
-  } else {
-    console.warn('DISABLE_DB is true. Using in-memory users only.');
+app.use(notFoundHandler);
+app.use(errorHandler);
+
+let cleanupTimer;
+
+export async function initializeBackend() {
+  if (!cleanupTimer) {
+    cleanupTimer = setInterval(cleanupOtpData, 60 * 1000);
+    cleanupTimer.unref?.();
   }
 
-  if (!process.env.VERCEL) {
-    app.listen(Number(PORT), () => {
-      console.log(`Auth API listening on port ${PORT}`);
-    });
-  }
+  await initializeDatabase();
 }
-
-setInterval(cleanupOtpData, 60 * 1000);
-
-start().catch((error) => {
-  console.error('Failed to start server:', error);
-});
-
-app.use((err, req, res, next) => {
-  console.error("Unhandled Error:", err);
-  res.status(500).json({
-    success: false,
-    message: err.message || 'Internal Server Error',
-    stack: process.env.NODE_ENV === 'production' ? undefined : err.stack
-  });
-});
 
 export default function handler(req, res) {
   return app(req, res);
 }
+
+export { app, makeRefundId };

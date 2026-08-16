@@ -1,2 +1,15 @@
 node_modules/
 .env
+.env.local
+.env.*
+!.env.example
+.local-jwt-secret
+uploads/
+*.log
+*.tmp
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore

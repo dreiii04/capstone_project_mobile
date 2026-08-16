@@ -46,6 +46,29 @@ app.*.map.json
 
 # Local env vars for MongoDB credentials
 .env
+**/.env
+.env.local
+**/.env.local
+.env.*
+**/.env.*
+.local-jwt-secret
+**/.local-jwt-secret
+!.env.example
+!**/.env.example
+
+# Private keys and signing credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+android/key.properties
+
+# User-uploaded images and local logs can contain personal information
+backend/uploads/
+backend/*.log
 
 # Backend dependencies
 backend/node_modules/
+node_modules/
