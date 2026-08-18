@@ -7,10 +7,11 @@ import 'package:flutter/services.dart';
 import '../services/mongo_data_api_service.dart';
 import '../widgets/simple_message_dialog.dart';
 
-typedef PasswordResetOtpRequester = Future<String?> Function(String email);
+typedef PasswordResetOtpRequester = Future<OtpChallenge> Function(String email);
 typedef PasswordResetOtpVerifier = Future<String> Function(
   String email,
   String otp,
+  String challengeToken,
 );
 typedef PasswordResetHandler = Future<void> Function(
   String resetToken,
@@ -48,6 +49,7 @@ class _PasswordScreenState extends State<PasswordScreen> {
   bool _codeSent = false;
   bool _isBusy = false;
   String _sentEmail = '';
+  String? _challengeToken;
   String? _devOtp;
   int _resendSeconds = 0;
   Timer? _resendTimer;
@@ -109,7 +111,7 @@ class _PasswordScreenState extends State<PasswordScreen> {
     setState(() => _isBusy = true);
     try {
       final requester = widget.otpRequester;
-      final otp = requester != null
+      final challenge = requester != null
           ? await requester(email)
           : await MongoDataApiService.instance
               .requestPasswordResetOtp(email: email);
@@ -118,8 +120,9 @@ class _PasswordScreenState extends State<PasswordScreen> {
       _otpController.clear();
       setState(() {
         _sentEmail = email;
+        _challengeToken = challenge.challengeToken;
         _codeSent = true;
-        _devOtp = kDebugMode ? otp : null;
+        _devOtp = kDebugMode ? challenge.developmentOtp : null;
         _isBusy = false;
       });
       _startResendCooldown();
@@ -142,18 +145,34 @@ class _PasswordScreenState extends State<PasswordScreen> {
     FocusManager.instance.primaryFocus?.unfocus();
     if (!(_otpFormKey.currentState?.validate() ?? false)) return;
 
+    final challengeToken = _challengeToken?.trim() ?? '';
+    if (challengeToken.isEmpty) {
+      await showSimpleMessageDialog(
+        context,
+        'Request a new verification code before continuing.',
+        title: 'Code not verified',
+      );
+      return;
+    }
+
     setState(() => _isBusy = true);
     try {
       final verifier = widget.otpVerifier;
       final resetToken = verifier != null
-          ? await verifier(_sentEmail, _otpController.text)
+          ? await verifier(
+              _sentEmail,
+              _otpController.text,
+              challengeToken,
+            )
           : await MongoDataApiService.instance.verifyPasswordResetOtp(
               email: _sentEmail,
               otp: _otpController.text,
+              challengeToken: challengeToken,
             );
       if (!mounted) return;
 
       _resendTimer?.cancel();
+      _challengeToken = null;
       await Navigator.pushReplacement(
         context,
         MaterialPageRoute(
@@ -180,6 +199,7 @@ class _PasswordScreenState extends State<PasswordScreen> {
     setState(() {
       _codeSent = false;
       _sentEmail = '';
+      _challengeToken = null;
       _devOtp = null;
       _resendSeconds = 0;
     });

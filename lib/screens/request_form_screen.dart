@@ -116,7 +116,7 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
       return;
     }
 
-    // Prepare data for the Pending Screen
+    // Prepare data for the Tracking screen.
     String finalDocName = (_mainDocType == 'Others')
         ? _otherDocumentController.text.trim()
         : _mainDocType!;
@@ -153,12 +153,20 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
       _isSubmitting = false;
     });
 
-    // Redirect to Pending Screen (Index 1 of your Home/Main layout)
+    // Redirect to Tracking (index 1 of the main layout).
     // Adjust 'HomeScreen' to match your actual Main/Home class name
     final requestData = response['request'];
     final requestMap = requestData is Map
         ? Map<String, dynamic>.from(requestData)
         : <String, dynamic>{};
+    final requestId = [
+      requestMap['requestId'],
+      requestMap['id'],
+      requestMap['_id'],
+      response['requestId'],
+    ]
+        .map((value) => value?.toString().trim() ?? '')
+        .firstWhere((value) => value.isNotEmpty, orElse: () => '');
     final statusRaw = requestMap['status']?.toString() ?? '';
     final documentPrice = _parseAmount(requestMap['documentPrice']);
     final totalAmount = _parseAmount(requestMap['totalAmount']);
@@ -172,6 +180,7 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
       MaterialPageRoute(
         builder: (context) => SuccessfulScreen(
           request: PendingRequest(
+            requestId: requestId.isEmpty ? null : requestId,
             status: displayStatus,
             purpose: finalPurpose,
             docName: finalDocName,
@@ -541,7 +550,7 @@ class SuccessfulScreen extends StatelessWidget {
                 color: Colors.black,
               ),
               Text(
-                "Your document request has been submitted and is now pending for processing. You can check the status of your request in the Pending section.",
+                "Your document request has been submitted. You can follow its current status and future updates in Tracking.",
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 14.sp, color: Colors.black54),
               ),

@@ -5,6 +5,8 @@ import { after, before, describe, test } from 'node:test';
 
 import jwt from 'jsonwebtoken';
 
+import { memoryUsers } from '../components/models/memory-store.js';
+
 const JWT_SECRET =
   'security-integration-test-secret-with-more-than-thirty-two-bytes';
 const JWT_ISSUER = 'verifitor-security-tests';
@@ -321,6 +323,40 @@ describe('backend security integration', { concurrency: false }, () => {
     );
     assert.equal(health.response.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(health.response.headers.get('cache-control'), 'no-store');
+  });
+
+  test('inactive accounts cannot log in or receive tokens', async () => {
+    const user = memoryUsers.get(email);
+    assert.ok(user, 'Expected the registered test user to exist.');
+    user.status = 'Inactive';
+
+    try {
+      const denied = await request(baseUrl, '/auth/login', {
+        json: { email, password },
+      });
+      assert.equal(denied.response.status, 403, denied.text);
+      assert.deepEqual(denied.json, {
+        success: false,
+        message:
+          'This account has been deactivated. Contact the administrator.',
+      });
+      assert.equal(denied.json?.accessToken, undefined);
+      assert.equal(denied.json?.refreshToken, undefined);
+
+      const deniedRefresh = await request(baseUrl, '/auth/refresh', {
+        json: { email, refreshToken },
+      });
+      assert.equal(deniedRefresh.response.status, 403, deniedRefresh.text);
+      assert.equal(deniedRefresh.json?.accessToken, undefined);
+      assert.equal(deniedRefresh.json?.refreshToken, undefined);
+
+      const deniedProfile = await request(baseUrl, '/profile', {
+        headers: bearer(accessToken),
+      });
+      assert.equal(deniedProfile.response.status, 404, deniedProfile.text);
+    } finally {
+      delete user.status;
+    }
   });
 
   test('CORS does not reflect unapproved browser origins', async () => {
@@ -969,6 +1005,22 @@ describe('backend security integration', { concurrency: false }, () => {
     }
     assert.equal(submitted.response.status, 201, submitted.text);
     assert(refundRecord, 'Expected to capture the in-memory refund.');
+    assert.match(String(refundRecord.refundId || ''), /^[a-f0-9]{24}$/);
+    assert.equal(submitted.json?.refundId, refundRecord.refundId);
+
+    const duplicate = await request(baseUrl, '/refunds', {
+      headers: bearer(accessToken),
+      json: {
+        transactionId: receipt.json?.receiptId,
+        refundMethod: 'gcash',
+        accountName: 'Security Tester',
+        accountNumber: '09171234567',
+        reason: 'The document request was rejected.',
+      },
+    });
+    assert.equal(duplicate.response.status, 409, duplicate.text);
+    assert.equal(duplicate.json?.alreadyRequested, true);
+    assert.equal(duplicate.json?.refundStatus, 'pending');
 
     const approved = await request(
       baseUrl,

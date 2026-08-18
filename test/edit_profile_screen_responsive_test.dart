@@ -81,7 +81,23 @@ void main() {
 
     expect(find.text('Profile photo'), findsOneWidget);
     expect(find.text('Personal information'), findsOneWidget);
-    expect(find.text('Password'), findsOneWidget);
+    expect(find.text('Account security'), findsNothing);
+    expect(find.text('Change password'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('login email is immutable and password fields stay off this page',
+      (tester) async {
+    await _pumpEditProfile(tester, const Size(412, 900));
+
+    final emailField = tester.widget<TextFormField>(
+      find.byKey(const Key('edit_school_login_email_field')),
+    );
+    expect(emailField.enabled, isFalse);
+    expect(find.text('Your login email cannot be changed.'), findsOneWidget);
+    expect(find.byKey(const Key('change_current_password_field')), findsNothing);
+    expect(find.byKey(const Key('change_new_password_field')), findsNothing);
+    expect(find.byKey(const Key('change_confirm_password_field')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

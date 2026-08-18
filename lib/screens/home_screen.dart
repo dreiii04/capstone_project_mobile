@@ -35,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late PageController _pageController;
   late List<NotificationItem> _notifications;
   List<PendingRequest> _pendingRequests = [];
+  List<HistoryItem> _trackingRefundItems = [];
   List<HistoryItem> _historyItems = [];
   bool _isLoadingRequests = false;
   String? _pendingRequestsError;
@@ -95,7 +96,8 @@ class _HomeScreenState extends State<HomeScreen> {
         normalized == 'pending for payment') {
       return 'PENDING FOR PAYMENT';
     }
-    if (normalized == 'pending_completion' ||
+    if (normalized == 'pending' ||
+        normalized == 'pending_completion' ||
         normalized == 'pending to complete') {
       return 'PENDING TO COMPLETE';
     }
@@ -172,6 +174,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         );
       }
+      nextNotifications.sort((a, b) {
+        final byDate = b.createdAt.compareTo(a.createdAt);
+        return byDate != 0 ? byDate : b.id.compareTo(a.id);
+      });
 
       final nextIds = nextNotifications.map((item) => item.id).toSet();
       final newItems = _hasLoadedNotifications
@@ -181,12 +187,17 @@ class _HomeScreenState extends State<HomeScreen> {
           : <NotificationItem>[];
 
       if (showPopups && newItems.isNotEmpty && mounted) {
+        final firstNotification = newItems.first;
+        final firstSummary = firstNotification.title.trim().isNotEmpty
+            ? firstNotification.title.trim()
+            : firstNotification.message.trim();
         final headline = newItems.length == 1
-            ? 'New notification: ${newItems.first.title}'
-            : 'You have ${newItems.length} new notifications';
+            ? 'Request update: $firstSummary'
+            : 'You have ${newItems.length} new request updates';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(headline)),
         );
+        unawaited(_loadRequests());
       }
 
       if (!mounted) return;
@@ -256,6 +267,23 @@ class _HomeScreenState extends State<HomeScreen> {
     return value?.toString().trim().toLowerCase() ?? '';
   }
 
+  String _firstMeaningfulStatus(Iterable<dynamic> values) {
+    const placeholders = {
+      'none',
+      'null',
+      'n/a',
+      'na',
+      '_',
+      'not_applicable',
+    };
+    for (final value in values) {
+      final text = value?.toString().trim() ?? '';
+      final normalized = text.toLowerCase().replaceAll(RegExp(r'[\s-]+'), '_');
+      if (text.isNotEmpty && !placeholders.contains(normalized)) return text;
+    }
+    return '';
+  }
+
   int? _matchingTransactionIndex(
     Map<String, dynamic> request,
     List<Map<String, dynamic>> transactions,
@@ -264,6 +292,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final requestIds = <String>{
       _normalizedValue(request['requestId']),
       _normalizedValue(request['id']),
+      _normalizedValue(request['_id']),
     }..remove('');
 
     if (requestIds.isNotEmpty) {
@@ -345,9 +374,10 @@ class _HomeScreenState extends State<HomeScreen> {
           : 0,
       paymentType: paymentType,
       remarks: requestRemarks.isNotEmpty ? requestRemarks : transactionRemarks,
-      refundStatus: transaction == null
-          ? request['refundStatus']?.toString().trim() ?? ''
-          : transaction['refundStatus']?.toString().trim() ?? '',
+      refundStatus: _firstMeaningfulStatus([
+        if (transaction != null) transaction['refundStatus'],
+        request['refundStatus'],
+      ]),
     );
   }
 
@@ -375,6 +405,7 @@ class _HomeScreenState extends State<HomeScreen> {
     List<Map<String, dynamic>> transactions,
   ) {
     final pending = <PendingRequest>[];
+    final trackingRefunds = <HistoryItem>[];
     final history = <HistoryItem>[];
     final usableTransactions = transactions
         .where((item) => _normalizedValue(item['docName']).isNotEmpty)
@@ -391,6 +422,10 @@ class _HomeScreenState extends State<HomeScreen> {
       final documentPrice = _parseAmount(item['documentPrice']);
       final totalAmount = _parseAmount(item['totalAmount']);
       final resolvedTotal = totalAmount > 0 ? totalAmount : documentPrice;
+      final linkedRequestId = _recordRequestId(item);
+      final requestId = linkedRequestId.isNotEmpty
+          ? linkedRequestId
+          : _firstText(item, const ['id', '_id']);
 
       if (_isHistoryStatus(statusRaw)) {
         final transactionIndex = _matchingTransactionIndex(
@@ -404,10 +439,16 @@ class _HomeScreenState extends State<HomeScreen> {
         if (transactionIndex != null) {
           consumedTransactions.add(transactionIndex);
         }
-        history.add(_historyFromRequest(item, transaction));
+        final terminalItem = _historyFromRequest(item, transaction);
+        if (terminalItem.shouldTrackRefund) {
+          trackingRefunds.add(terminalItem);
+        } else {
+          history.add(terminalItem);
+        }
       } else {
         pending.add(
           PendingRequest(
+            requestId: requestId.isEmpty ? null : requestId,
             docName: docName,
             purpose: purpose,
             dateCreated: createdAt,
@@ -424,14 +465,24 @@ class _HomeScreenState extends State<HomeScreen> {
       final item = usableTransactions[index];
       final statusRaw = item['status']?.toString().trim() ?? 'completed';
       if (_isHistoryStatus(statusRaw)) {
-        history.add(_historyFromTransaction(item));
+        final terminalItem = _historyFromTransaction(item);
+        if (terminalItem.shouldTrackRefund) {
+          trackingRefunds.add(terminalItem);
+        } else {
+          history.add(terminalItem);
+        }
       }
     }
 
     _mergeNewRequest(pending);
     pending.sort((a, b) => b.dateCreated.compareTo(a.dateCreated));
+    trackingRefunds.sort((a, b) => b.date.compareTo(a.date));
     history.sort((a, b) => b.date.compareTo(a.date));
-    return _MappedRequestData(pending: pending, history: history);
+    return _MappedRequestData(
+      pending: pending,
+      trackingRefunds: trackingRefunds,
+      history: history,
+    );
   }
 
   int? _matchingHistoryIndex(
@@ -519,6 +570,41 @@ class _HomeScreenState extends State<HomeScreen> {
     return merged;
   }
 
+  bool _sameRequestRecord(HistoryItem first, HistoryItem second) {
+    final firstRequestId = _normalizedValue(first.requestId);
+    final secondRequestId = _normalizedValue(second.requestId);
+    if (firstRequestId.isNotEmpty && firstRequestId == secondRequestId) {
+      return true;
+    }
+    final firstTransactionId = _normalizedValue(first.transactionId);
+    final secondTransactionId = _normalizedValue(second.transactionId);
+    if (firstTransactionId.isNotEmpty &&
+        firstTransactionId == secondTransactionId) {
+      return true;
+    }
+    return firstRequestId.isEmpty &&
+        secondRequestId.isEmpty &&
+        firstTransactionId.isEmpty &&
+        secondTransactionId.isEmpty &&
+        _normalizedValue(first.title) == _normalizedValue(second.title) &&
+        _normalizedValue(first.purpose) == _normalizedValue(second.purpose) &&
+        first.date.difference(second.date).inMinutes.abs() < 1;
+  }
+
+  List<HistoryItem> _withoutTrackedRefunds(
+    List<HistoryItem> history,
+    List<HistoryItem> trackedRefunds,
+  ) {
+    if (trackedRefunds.isEmpty) return history;
+    return history
+        .where(
+          (item) => !trackedRefunds.any(
+            (tracked) => _sameRequestRecord(item, tracked),
+          ),
+        )
+        .toList();
+  }
+
   Future<_RequestListLoad> _captureRequestLoad(
     Future<List<Map<String, dynamic>>> operation,
   ) async {
@@ -566,6 +652,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final transactionResult = results[1];
 
     List<PendingRequest>? nextPending;
+    List<HistoryItem>? nextTrackingRefunds;
     List<HistoryItem>? nextHistory;
     if (requestResult.data != null) {
       final mapped = _mapRequestData(
@@ -573,25 +660,42 @@ class _HomeScreenState extends State<HomeScreen> {
         transactionResult.data ?? const <Map<String, dynamic>>[],
       );
       nextPending = mapped.pending;
-      nextHistory = transactionResult.data == null
+      nextTrackingRefunds = transactionResult.data == null
+          ? _mergeHistoryLists(
+              mapped.trackingRefunds,
+              _trackingRefundItems,
+            )
+          : mapped.trackingRefunds;
+      final candidateHistory = transactionResult.data == null
           ? _mergeHistoryLists(mapped.history, _historyItems)
           : mapped.history;
+      nextHistory = _withoutTrackedRefunds(
+        candidateHistory,
+        nextTrackingRefunds,
+      );
     } else if (transactionResult.data != null) {
-      final transactionHistory = _mapRequestData(
+      final transactionData = _mapRequestData(
         const <Map<String, dynamic>>[],
         transactionResult.data!,
-      ).history;
-      nextHistory = _mergeHistoryLists(transactionHistory, _historyItems);
+      );
+      nextTrackingRefunds = transactionData.trackingRefunds;
+      nextHistory = _withoutTrackedRefunds(
+        _mergeHistoryLists(transactionData.history, _historyItems),
+        nextTrackingRefunds,
+      );
     }
 
     if (!mounted) return;
     setState(() {
       if (nextPending != null) _pendingRequests = nextPending;
+      if (nextTrackingRefunds != null) {
+        _trackingRefundItems = nextTrackingRefunds;
+      }
       if (nextHistory != null) _historyItems = nextHistory;
       _pendingRequestsError = requestResult.data == null
           ? _loadErrorMessage(
               requestResult.error,
-              'Pending requests could not be refreshed. Please try again.',
+              'Tracked requests could not be refreshed. Please try again.',
             )
           : null;
       if (requestResult.data == null && transactionResult.data == null) {
@@ -633,19 +737,20 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _profileSummary = profile);
   }
 
-  void _openNotifications() {
+  Future<void> _openNotifications() async {
     setState(() {
       for (final item in _notifications) {
         item.isRead = true;
       }
     });
 
-    Navigator.push(
+    await Navigator.push<void>(
       context,
       MaterialPageRoute(
         builder: (context) => NotificationScreen(notifications: _notifications),
       ),
     );
+    if (mounted) await _loadRequests();
   }
 
   void _openProfile() {
@@ -705,6 +810,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildHomeContent(context),
           PendingScreen(
             requestList: _pendingRequests,
+            refundItems: _trackingRefundItems,
             isLoading: _isLoadingRequests,
             errorMessage: _pendingRequestsError,
             onRefresh: _loadRequests,
@@ -748,9 +854,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 label: 'Home',
               ),
               NavigationDestination(
-                icon: Icon(Icons.schedule_outlined),
-                selectedIcon: Icon(Icons.schedule),
-                label: 'Pending',
+                icon: Icon(Icons.route_outlined),
+                selectedIcon: Icon(Icons.route),
+                label: 'Tracking',
               ),
               NavigationDestination(
                 icon: Icon(Icons.history_outlined),
@@ -770,7 +876,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildHomeContent(BuildContext context) {
-    final pendingCount = _pendingRequests.length;
+    final pendingCount = _pendingRequests.length + _trackingRefundItems.length;
     final historyCount = _historyItems.length;
     final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
 
@@ -1222,8 +1328,13 @@ class _RequestListLoad {
 }
 
 class _MappedRequestData {
-  const _MappedRequestData({required this.pending, required this.history});
+  const _MappedRequestData({
+    required this.pending,
+    required this.trackingRefunds,
+    required this.history,
+  });
 
   final List<PendingRequest> pending;
+  final List<HistoryItem> trackingRefunds;
   final List<HistoryItem> history;
 }

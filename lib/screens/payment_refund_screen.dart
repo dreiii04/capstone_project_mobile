@@ -6,10 +6,24 @@ import '../services/mongo_data_api_service.dart';
 import '../widgets/simple_message_dialog.dart';
 import 'history_screen.dart';
 
+typedef RefundRequestCallback = Future<Map<String, dynamic>> Function({
+  required String transactionId,
+  required String refundMethod,
+  required String accountName,
+  required String accountNumber,
+  String? bankName,
+  String? reason,
+});
+
 class PaymentRefundScreen extends StatefulWidget {
-  const PaymentRefundScreen({super.key, required this.item});
+  const PaymentRefundScreen({
+    super.key,
+    required this.item,
+    this.requestRefund,
+  });
 
   final HistoryItem item;
+  final RefundRequestCallback? requestRefund;
 
   @override
   State<PaymentRefundScreen> createState() => _PaymentRefundScreenState();
@@ -66,7 +80,9 @@ class _PaymentRefundScreenState extends State<PaymentRefundScreen> {
 
     setState(() => _isSubmitting = true);
     try {
-      final result = await MongoDataApiService.instance.requestRefund(
+      final requestRefund =
+          widget.requestRefund ?? MongoDataApiService.instance.requestRefund;
+      final result = await requestRefund(
         transactionId: widget.item.transactionId,
         refundMethod: _refundMethod,
         accountName: _accountNameController.text,
@@ -80,6 +96,21 @@ class _PaymentRefundScreenState extends State<PaymentRefundScreen> {
           result['refundStatus']?.toString().trim().isNotEmpty == true
               ? result['refundStatus'].toString().trim()
               : 'pending';
+      if (result['alreadyRequested'] == true) {
+        setState(() => _isSubmitting = false);
+        await showSimpleMessageDialog(
+          context,
+          'You already submitted a refund request for this payment. Only one '
+          'request is allowed. Track the existing request in Tracking, or '
+          "contact the Registrar's Office if you need to correct the refund "
+          'destination.',
+          title: 'Refund already requested',
+        );
+        if (mounted && Navigator.canPop(context)) {
+          Navigator.pop(context, true);
+        }
+        return;
+      }
       setState(() {
         _submitted = true;
         _isSubmitting = false;
@@ -241,7 +272,7 @@ class _PaymentRefundScreenState extends State<PaymentRefundScreen> {
           SizedBox(height: 16),
           _RefundStep(
             number: '3',
-            title: 'Follow the status in History',
+            title: 'Follow the status in Tracking',
             description:
                 'You will receive a notification when the refund status changes or more information is needed.',
             isLast: true,
@@ -444,7 +475,7 @@ class _PaymentRefundScreenState extends State<PaymentRefundScreen> {
           ),
           const SizedBox(height: 10),
           Text(
-            'Your $_formattedAmount refund for ${widget.item.title} is now under review. Track it in History; you will also receive a notification when its status changes.',
+            'Your $_formattedAmount refund for ${widget.item.title} is now under review. Track it in Tracking; you will also receive a notification when its status changes.',
             textAlign: TextAlign.center,
             style: const TextStyle(
               color: Color(0xFF687680),

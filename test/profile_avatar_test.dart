@@ -1,21 +1,16 @@
-import 'package:capstone_project/constants.dart';
 import 'package:capstone_project/widgets/profile_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('profile image URLs resolve against the configured API host', () {
-    final previousBaseUrl = authApiBaseUrl;
-    addTearDown(() => authApiBaseUrl = previousBaseUrl);
-    authApiBaseUrl = 'http://10.0.2.2:4000';
-
+  test('profile image URLs resolve against the centralized API host', () {
     expect(
       resolveProfileImageUrl('/uploads/profiles/photo.png'),
-      'http://10.0.2.2:4000/uploads/profiles/photo.png',
+      'https://verifitor-backend.vercel.app/uploads/profiles/photo.png',
     );
     expect(
       resolveProfileImageUrl('uploads/profiles/photo.png'),
-      'http://10.0.2.2:4000/uploads/profiles/photo.png',
+      'https://verifitor-backend.vercel.app/uploads/profiles/photo.png',
     );
     expect(
       resolveProfileImageUrl('https://res.cloudinary.com/demo/photo.png'),

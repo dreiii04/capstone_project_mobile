@@ -1,79 +1,73 @@
-# capstone_project
+# Verifitor Mobile
 
-A new Flutter project.
+Flutter client for Verifitor document requests, payments, notifications, and
+account management.
 
-## Secure MongoDB Connection (via Backend API)
+## API architecture
 
-This app now connects to MongoDB Atlas through a backend API (Node.js + Express) so MongoDB credentials are not exposed in the Flutter client.
+The mobile and web clients communicate with one shared Vercel API and therefore
+use the same authentication service and database.
 
-### 1) Backend setup
-
-1. Open the backend folder and install packages:
-
-```bash
-cd backend
-npm install
+```text
+Web client ----\
+                > Shared Vercel API -> Shared database
+Mobile client -/
 ```
 
-2. Create backend environment file:
+The mobile API URL is defined once in `lib/constants.dart` as
+`ApiConstants.baseUrl`:
 
-```bash
-copy .env.example .env
+```text
+https://verifitor-backend.vercel.app/api
 ```
 
-3. Set values in `backend/.env`:
+All HTTP and multipart requests are created by `MongoDataApiService` from that
+constant.
 
-```env
-PORT=4000
-MONGODB_URI=mongodb://<username>:<password>@<shard-00-00>:27017,<shard-00-01>:27017,<shard-00-02>:27017/verifitor?replicaSet=<replica-set>&authSource=admin&retryWrites=true&w=majority&tls=true
-MONGODB_DB_NAME=verifitor
-MONGODB_USERS_COLLECTION=users
-ALLOWED_ORIGIN=*
-MAILBOXLAYER_ACCESS_KEY=
-OTP_TTL_MINUTES=10
-OTP_DEV_MODE=true
-JWT_SECRET=changeme
-JWT_ACCESS_TTL_MINUTES=15
-JWT_REFRESH_TTL_DAYS=30
-JWT_ISSUER=verifitor
+The same Flutter code can target another environment at build time without
+changing source files:
+
+```powershell
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:4000
+flutter build web --dart-define=API_BASE_URL=https://verifitor-backend.vercel.app/api
 ```
 
-4. Start backend:
+For a browser deployment, set the backend's `ALLOWED_ORIGIN` environment
+variable to the web application's HTTPS origin. Multiple web origins are
+comma-separated. Native mobile requests do not send a browser origin and use
+the same backend automatically.
 
-```bash
-npm run dev
-```
+## Expected API contract
 
-### 2) Flutter app setup
+The mobile client retains these existing relative routes under the shared
+`/api` prefix:
 
-1. In project root, create `.env` from `.env.example` and set:
+- `POST /auth/login`
+- `POST /auth/refresh`
+- `POST /auth/logout`
+- `POST /auth/register/request-otp`
+- `POST /auth/register/verify-otp`
+- `POST /auth/forgot-password/request-otp`
+- `POST /auth/forgot-password/verify-otp`
+- `POST /auth/forgot-password/reset`
+- `GET, PUT /profile`
+- `POST /profile/photo`
+- `PUT /profile/password`
+- `GET, POST /requests`
+- `GET /receipts`
+- `POST /payments/receipt`
+- `GET /notifications`
+- `GET /transactions`
+- `POST /refunds`
 
-```env
-API_BASE_URL=http://localhost:4000
-```
+Unsuccessful authentication responses display the message returned by the
+shared API, including inactive or deactivated account messages.
 
-For Android emulator use:
+## Run and verify
 
-```env
-API_BASE_URL=http://10.0.2.2:4000
-```
-
-2. Install Flutter packages:
-
-```bash
+```powershell
 flutter pub get
-```
-
-3. Run the app:
-
-```bash
 flutter run
+flutter analyze
+flutter test
 ```
-
-Notes:
-- Backend validates inputs and hashes passwords with bcrypt before storing.
-- Flutter login/register forms also validate input before API calls.
-- Forgot password now uses OTP verification endpoints in backend.
-- In development, `OTP_DEV_MODE=true` returns OTP in API response/snackbar.
-- Set `MAILBOXLAYER_ACCESS_KEY` to enable mailboxlayer email deliverability checks.
-- `.env` files are git-ignored.

@@ -9,7 +9,6 @@ import '../services/mongo_data_api_service.dart';
 import '../widgets/custom_font.dart';
 import '../widgets/simple_message_dialog.dart';
 
-
 class PaymentMethodScreen extends StatefulWidget {
   final PendingRequest request;
   const PaymentMethodScreen({super.key, required this.request});
@@ -80,21 +79,27 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
     });
 
     try {
+      final requestId = widget.request.requestId?.trim() ?? '';
+      if (requestId.isEmpty) {
+        throw Exception(
+          'This payment is not linked to a request. Refresh your requests and try again.',
+        );
+      }
       final service = MongoDataApiService.instance;
       if (_receiptBytes != null) {
         await service.uploadReceipt(
           bytes: _receiptBytes!,
           fileName: _receiptName ?? 'payment-receipt.jpg',
+          requestId: requestId,
           paymentType: 'receipt',
           docName: widget.request.docName,
           purpose: widget.request.purpose,
-          amount: widget.request.documentPrice,
-          status: 'pending',
         );
       }
 
       if (!mounted) return;
       final updatedRequest = PendingRequest(
+        requestId: widget.request.requestId,
         docName: widget.request.docName,
         purpose: widget.request.purpose,
         dateCreated: widget.request.dateCreated,
@@ -130,7 +135,11 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
       backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: const Color(0xFF5D7E97),
-        title: CustomFont(text: "Payment Method", color: Colors.white, fontSize: 20.sp, fontWeight: FontWeight.bold),
+        title: CustomFont(
+            text: "Payment Method",
+            color: Colors.white,
+            fontSize: 20.sp,
+            fontWeight: FontWeight.bold),
       ),
       body: Padding(
         padding: EdgeInsets.all(20.w),
@@ -149,26 +158,28 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
                 isBold: true,
               ),
             ]),
-            
-
 
             SizedBox(height: 20.h),
             // Receipt Upload
             Container(
               padding: EdgeInsets.all(20.r),
-              decoration: BoxDecoration(color: const Color(0xFFF5F5F5), borderRadius: BorderRadius.circular(10.r)),
+              decoration: BoxDecoration(
+                  color: const Color(0xFFF5F5F5),
+                  borderRadius: BorderRadius.circular(10.r)),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  CustomFont(text: "Upload Receipt", fontSize: 16.sp, fontWeight: FontWeight.bold, color: const Color(0xFF233446)),
+                  CustomFont(
+                      text: "Upload Receipt",
+                      fontSize: 16.sp,
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF233446)),
                   SizedBox(height: 12.h),
                   _buildReceiptSection(
                     title: "Receipt",
                     description: "Upload your official receipt file.",
                     buttonLabel: "Upload file",
-                    onPressed: _isSubmitting
-                        ? null
-                      : _showReceiptSourceSheet,
+                    onPressed: _isSubmitting ? null : _showReceiptSourceSheet,
                     fileName: _receiptName,
                   ),
                 ],
@@ -204,12 +215,13 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
             SizedBox(height: 10.h),
             ElevatedButton(
               onPressed: _acknowledged && _hasReceipt && !_isSubmitting
-                ? _submitPayment
-                : null,
+                  ? _submitPayment
+                  : null,
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF233446),
                 fixedSize: Size(double.infinity, 50.h),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8.r)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8.r)),
               ),
               child: _isSubmitting
                   ? const SizedBox(
@@ -220,7 +232,11 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
                         color: Colors.white,
                       ),
                     )
-                  : CustomFont(text: "Confirm Payment", color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16.sp),
+                  : CustomFont(
+                      text: "Confirm Payment",
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16.sp),
             ),
           ],
         ),
@@ -228,7 +244,7 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
     );
   }
 
-    Widget _buildSectionCard(String title, List<Widget> children) {
+  Widget _buildSectionCard(String title, List<Widget> children) {
     return Container(
       width: double.infinity,
       padding: EdgeInsets.all(16.r),
@@ -247,7 +263,11 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          CustomFont(text: title, fontSize: 16.sp, fontWeight: FontWeight.bold, color: const Color(0xFF233446)),
+          CustomFont(
+              text: title,
+              fontSize: 16.sp,
+              fontWeight: FontWeight.bold,
+              color: const Color(0xFF233446)),
           SizedBox(height: 12.h),
           ...children,
         ],
@@ -255,14 +275,18 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
     );
   }
 
-   Widget _infoRow(String label, String value, {bool isBold = false}) {
+  Widget _infoRow(String label, String value, {bool isBold = false}) {
     return Padding(
       padding: EdgeInsets.symmetric(vertical: 4.h),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           CustomFont(text: label, fontSize: 13.sp, color: Colors.black54),
-          CustomFont(text: value, fontSize: 13.sp, fontWeight: isBold ? FontWeight.bold : FontWeight.w500, color: isBold ? const Color(0xFF233446) : Colors.black87),
+          CustomFont(
+              text: value,
+              fontSize: 13.sp,
+              fontWeight: isBold ? FontWeight.bold : FontWeight.w500,
+              color: isBold ? const Color(0xFF233446) : Colors.black87),
         ],
       ),
     );
@@ -285,7 +309,11 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          CustomFont(text: title, fontSize: 14.sp, fontWeight: FontWeight.bold, color: const Color(0xFF233446)),
+          CustomFont(
+              text: title,
+              fontSize: 14.sp,
+              fontWeight: FontWeight.bold,
+              color: const Color(0xFF233446)),
           SizedBox(height: 4.h),
           CustomFont(text: description, fontSize: 11.sp, color: Colors.black54),
           SizedBox(height: 8.h),
@@ -302,10 +330,7 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
       ),
     );
   }
-
-
 }
-
 
 class SuccessfulScreen extends StatelessWidget {
   final PendingRequest request;
@@ -323,16 +348,25 @@ class SuccessfulScreen extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
-                height: 120.r, width: 120.r,
-                decoration: const BoxDecoration(color: Color(0xFF9DB2BF), shape: BoxShape.circle),
+                height: 120.r,
+                width: 120.r,
+                decoration: const BoxDecoration(
+                    color: Color(0xFF9DB2BF), shape: BoxShape.circle),
                 child: Icon(Icons.check, color: Colors.white, size: 80.r),
               ),
               SizedBox(height: 30.h),
-              CustomFont(text: "Payment Successful", fontSize: 24.sp, fontWeight: FontWeight.bold, color: const Color(0xFF233446)),
+              CustomFont(
+                  text: "Payment Successful",
+                  fontSize: 24.sp,
+                  fontWeight: FontWeight.bold,
+                  color: const Color(0xFF233446)),
               SizedBox(height: 10.h),
               CustomFont(
-                text: "Your payment has been successfully submitted. Please wait while the registrar verifies your payment.",
-                textAlign: TextAlign.center, fontSize: 13.sp, color: Colors.black54,
+                text:
+                    "Your payment has been successfully submitted. Please wait while the registrar verifies your payment.",
+                textAlign: TextAlign.center,
+                fontSize: 13.sp,
+                color: Colors.black54,
               ),
               SizedBox(height: 50.h),
               ElevatedButton(
@@ -342,8 +376,9 @@ class SuccessfulScreen extends StatelessWidget {
                     context,
                     MaterialPageRoute(
                       builder: (context) => HomeScreen(
-                        initialIndex: 1, // Go to Pending/Requests Tab
+                        initialIndex: 1, // Go to the Tracking tab.
                         newRequest: PendingRequest(
+                          requestId: request.requestId,
                           docName: request.docName,
                           purpose: request.purpose,
                           dateCreated: request.dateCreated,
@@ -359,9 +394,14 @@ class SuccessfulScreen extends StatelessWidget {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF27374D),
                   fixedSize: Size(340.w, 50.h),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8.r)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8.r)),
                 ),
-                child: CustomFont(text: "Proceed", fontSize: 18.sp, color: Colors.white, fontWeight: FontWeight.bold),
+                child: CustomFont(
+                    text: "Proceed",
+                    fontSize: 18.sp,
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold),
               ),
             ],
           ),

@@ -24,6 +24,22 @@ class TokenStorage {
     await _secure.write(key: _keyEmail, value: email);
   }
 
+  Future<void> writeSession({
+    required String accessToken,
+    required String refreshToken,
+    required int? expiryMillis,
+    required String email,
+  }) async {
+    await writeAccessToken(accessToken);
+    await writeRefreshToken(refreshToken);
+    if (expiryMillis == null) {
+      await _secure.delete(key: _keyExpiry);
+    } else {
+      await writeExpiryMillis(expiryMillis);
+    }
+    await writeEmail(email);
+  }
+
   Future<String?> readAccessToken() => _secure.read(key: _keyAccess);
   Future<String?> readRefreshToken() => _secure.read(key: _keyRefresh);
   Future<int?> readExpiryMillis() async {

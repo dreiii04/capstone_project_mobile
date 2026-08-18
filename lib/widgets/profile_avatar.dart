@@ -11,11 +11,8 @@ String resolveProfileImageUrl(String value) {
   }
 
   if (trimmed.startsWith('/uploads/') || trimmed.startsWith('uploads/')) {
-    final baseUri = Uri.tryParse(authApiBaseUrl);
-    if (baseUri != null) {
-      final path = trimmed.startsWith('/') ? trimmed : '/$trimmed';
-      return baseUri.resolve(path).toString();
-    }
+    final path = trimmed.startsWith('/') ? trimmed : '/$trimmed';
+    return ApiConstants.originUri.resolve(path).toString();
   }
 
   return trimmed;

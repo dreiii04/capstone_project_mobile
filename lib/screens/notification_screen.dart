@@ -33,10 +33,14 @@ class _NotificationScreenState extends State<NotificationScreen> {
   }
 
   List<NotificationItem> _getFilteredNotifications() {
-    if (_filterType == 'unread') {
-      return widget.notifications.where((n) => !n.isRead).toList();
-    }
-    return widget.notifications;
+    final filtered = _filterType == 'unread'
+        ? widget.notifications.where((item) => !item.isRead).toList()
+        : widget.notifications.toList();
+    filtered.sort((a, b) {
+      final byDate = b.createdAt.compareTo(a.createdAt);
+      return byDate != 0 ? byDate : b.id.compareTo(a.id);
+    });
+    return filtered;
   }
 
   @override
@@ -110,11 +114,13 @@ class _NotificationScreenState extends State<NotificationScreen> {
                       _filterType == 'unread'
                           ? 'No unread notifications.'
                           : 'No notifications yet.',
-                      style: TextStyle(fontSize: 16.sp, color: Colors.grey[600]),
+                      style:
+                          TextStyle(fontSize: 16.sp, color: Colors.grey[600]),
                     ),
                   )
                 : ListView.separated(
-                    padding: EdgeInsets.symmetric(horizontal: 16.w, vertical: 12.h),
+                    padding:
+                        EdgeInsets.symmetric(horizontal: 16.w, vertical: 12.h),
                     itemCount: filteredNotifications.length,
                     separatorBuilder: (_, __) => SizedBox(height: 12.h),
                     itemBuilder: (context, index) {

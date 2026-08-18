@@ -34,11 +34,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late final TextEditingController _programController;
   late final TextEditingController _schoolEmailController;
   late final TextEditingController _personalEmailController;
-  late final TextEditingController _passController;
-  late final TextEditingController _confirmPassController;
 
-  bool _obscurePass = true;
-  bool _obscureConfirm = true;
   bool _isSaving = false;
 
   List<TextEditingController> get _controllers => [
@@ -49,24 +45,18 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         _programController,
         _schoolEmailController,
         _personalEmailController,
-        _passController,
-        _confirmPassController,
       ];
 
   bool get _hasChanges {
     final profile = widget.profile;
-    final accountFieldsChanged = profile.isCurrentStudent
-        ? _studentIdController.text.trim() != profile.studentId.trim() ||
-            _schoolEmailController.text.trim() != profile.schoolEmail.trim()
-        : _personalEmailController.text.trim() != profile.personalEmail.trim();
+    final accountFieldsChanged = profile.isCurrentStudent &&
+        _studentIdController.text.trim() != profile.studentId.trim();
     return _image != null ||
         _firstNameController.text.trim() != profile.firstName.trim() ||
         _lastNameController.text.trim() != profile.lastName.trim() ||
         _yearLevelController.text.trim() != profile.yearLevel.trim() ||
         _programController.text.trim() != profile.program.trim() ||
-        accountFieldsChanged ||
-        _passController.text.isNotEmpty ||
-        _confirmPassController.text.isNotEmpty;
+        accountFieldsChanged;
   }
 
   @override
@@ -82,8 +72,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _schoolEmailController = TextEditingController(text: profile.schoolEmail);
     _personalEmailController =
         TextEditingController(text: profile.personalEmail);
-    _passController = TextEditingController();
-    _confirmPassController = TextEditingController();
 
     for (final controller in _controllers) {
       controller.addListener(_refreshSaveState);
@@ -137,21 +125,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     return validEmail.hasMatch(email) ? null : 'Enter a valid email address';
   }
 
-  String? _validatePassword(String? value) {
-    final password = value ?? '';
-    if (password.isEmpty && _confirmPassController.text.isEmpty) return null;
-    if (password.length < 8) return 'Use at least 8 characters';
-    return null;
-  }
-
-  String? _validatePasswordConfirmation(String? value) {
-    final confirmation = value ?? '';
-    if (_passController.text.isEmpty && confirmation.isEmpty) return null;
-    if (confirmation.isEmpty) return 'Confirm your new password';
-    if (confirmation != _passController.text) return 'Passwords do not match';
-    return null;
-  }
-
   Future<void> _handleSave() async {
     if (_isSaving || !_hasChanges) return;
     FocusManager.instance.primaryFocus?.unfocus();
@@ -167,20 +140,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           : '',
       yearLevel: _yearLevelController.text.trim(),
       program: _programController.text.trim(),
-      schoolEmail: widget.profile.usesSchoolLogin
-          ? _schoolEmailController.text.trim()
-          : '',
-      personalEmail: widget.profile.usesSchoolLogin
-          ? ''
-          : _personalEmailController.text.trim(),
+      schoolEmail:
+          widget.profile.usesSchoolLogin ? widget.profile.schoolEmail : '',
+      personalEmail:
+          widget.profile.usesSchoolLogin ? '' : widget.profile.personalEmail,
       role: widget.profile.role,
     );
 
     try {
       var saved = await MongoDataApiService.instance.updateProfile(
         profile: updated,
-        newPassword:
-            _passController.text.isNotEmpty ? _passController.text : null,
       );
       if (_image != null) {
         final bytes = await _image!.readAsBytes();
@@ -264,8 +233,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           _buildProfilePhotoCard(),
                           const SizedBox(height: 20),
                           _buildPersonalInformationCard(),
-                          const SizedBox(height: 16),
-                          _buildPasswordCard(),
                         ],
                       ),
                     ),
@@ -497,7 +464,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               keyboardType: TextInputType.emailAddress,
               validator: (value) => _validateEmail(value, required: true),
               autofillHints: const [AutofillHints.email],
-              helper: 'You will use this school email to sign in.',
+              helper: 'Your login email cannot be changed.',
+              enabled: false,
             ),
           ] else ...[
             const SizedBox(height: 14),
@@ -509,49 +477,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               keyboardType: TextInputType.emailAddress,
               validator: (value) => _validateEmail(value, required: true),
               autofillHints: const [AutofillHints.email],
-              helper: 'You will use this email to sign in.',
+              helper: 'Your login email cannot be changed.',
+              enabled: false,
             ),
           ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPasswordCard() {
-    return _buildSectionCard(
-      icon: Icons.lock_outline_rounded,
-      title: 'Password',
-      subtitle: 'Leave both fields blank if you do not want to change it.',
-      child: Column(
-        children: [
-          _buildTextField(
-            controller: _passController,
-            label: 'New password',
-            icon: Icons.key_rounded,
-            obscureText: _obscurePass,
-            validator: _validatePassword,
-            autofillHints: const [AutofillHints.newPassword],
-            suffixIcon: _visibilityButton(
-              obscure: _obscurePass,
-              onPressed: () => setState(() => _obscurePass = !_obscurePass),
-            ),
-          ),
-          const SizedBox(height: 14),
-          _buildTextField(
-            controller: _confirmPassController,
-            label: 'Confirm new password',
-            icon: Icons.key_rounded,
-            obscureText: _obscureConfirm,
-            validator: _validatePasswordConfirmation,
-            autofillHints: const [AutofillHints.newPassword],
-            textInputAction: TextInputAction.done,
-            suffixIcon: _visibilityButton(
-              obscure: _obscureConfirm,
-              onPressed: () =>
-                  setState(() => _obscureConfirm = !_obscureConfirm),
-            ),
-            onFieldSubmitted: (_) => _handleSave(),
-          ),
         ],
       ),
     );
@@ -658,8 +587,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     TextCapitalization textCapitalization = TextCapitalization.none,
     TextInputAction textInputAction = TextInputAction.next,
     Iterable<String>? autofillHints,
+    bool enabled = true,
     bool obscureText = false,
-    Widget? suffixIcon,
     ValueChanged<String>? onFieldSubmitted,
   }) {
     return TextFormField(
@@ -670,6 +599,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       textCapitalization: textCapitalization,
       textInputAction: textInputAction,
       autofillHints: autofillHints,
+      enabled: enabled,
       obscureText: obscureText,
       onFieldSubmitted: onFieldSubmitted,
       style: const TextStyle(color: _darkNavy, fontSize: 15),
@@ -679,7 +609,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         helperText: helper,
         helperMaxLines: 2,
         prefixIcon: Icon(icon, size: 21),
-        suffixIcon: suffixIcon,
         filled: true,
         fillColor: const Color(0xFFF8FAFB),
         contentPadding:
@@ -700,19 +629,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           borderRadius: BorderRadius.circular(12),
           borderSide: const BorderSide(color: Color(0xFFB3261E)),
         ),
-      ),
-    );
-  }
-
-  Widget _visibilityButton({
-    required bool obscure,
-    required VoidCallback onPressed,
-  }) {
-    return IconButton(
-      tooltip: obscure ? 'Show password' : 'Hide password',
-      onPressed: onPressed,
-      icon: Icon(
-        obscure ? Icons.visibility_off_outlined : Icons.visibility_outlined,
       ),
     );
   }

@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../screens/history_detail_screen.dart';
+import '../screens/history_screen.dart';
 import '../screens/request_detail_screen.dart';
 
 class PendingRequest {
+  final String? requestId;
   final String docName;
   final String purpose;
   final DateTime dateCreated;
@@ -12,6 +15,7 @@ class PendingRequest {
   final double totalAmount;
 
   PendingRequest({
+    this.requestId,
     required this.docName,
     required this.purpose,
     required this.dateCreated,
@@ -23,6 +27,7 @@ class PendingRequest {
 
 class PendingScreen extends StatefulWidget {
   final List<PendingRequest> requestList;
+  final List<HistoryItem> refundItems;
   final bool isLoading;
   final String? errorMessage;
   final Future<void> Function()? onRefresh;
@@ -30,6 +35,7 @@ class PendingScreen extends StatefulWidget {
   const PendingScreen({
     super.key,
     required this.requestList,
+    this.refundItems = const [],
     this.isLoading = false,
     this.errorMessage,
     this.onRefresh,
@@ -51,7 +57,8 @@ class _PendingScreenState extends State<PendingScreen> {
     super.didUpdateWidget(oldWidget);
     if (_selectedFilter != 'All' &&
         !widget.requestList
-            .any((request) => request.docName == _selectedFilter)) {
+            .any((request) => request.docName == _selectedFilter) &&
+        !widget.refundItems.any((item) => item.title == _selectedFilter)) {
       _selectedFilter = 'All';
     }
   }
@@ -61,11 +68,13 @@ class _PendingScreenState extends State<PendingScreen> {
     if (callback != null) await callback();
   }
 
-  Future<void> _openDetails(PendingRequest item) async {
+  Future<void> _openDetails(_TrackingEntry item) async {
     await Navigator.push<void>(
       context,
       MaterialPageRoute(
-        builder: (context) => RequestDetailsScreen(request: item),
+        builder: (context) => item.refundItem == null
+            ? RequestDetailsScreen(request: item.request!)
+            : HistoryDetailScreen(item: item.refundItem!),
       ),
     );
     if (mounted) await _refresh();
@@ -73,14 +82,18 @@ class _PendingScreenState extends State<PendingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final trackingEntries = <_TrackingEntry>[
+      ...widget.requestList.map(_TrackingEntry.request),
+      ...widget.refundItems.map(_TrackingEntry.refund),
+    ]..sort((a, b) => b.dateCreated.compareTo(a.dateCreated));
     final filters = <String>[
       'All',
-      ...widget.requestList.map((request) => request.docName).toSet(),
+      ...trackingEntries.map((item) => item.docName).toSet(),
     ];
     final filteredList = _selectedFilter == 'All'
-        ? widget.requestList
-        : widget.requestList
-            .where((request) => request.docName == _selectedFilter)
+        ? trackingEntries
+        : trackingEntries
+            .where((item) => item.docName == _selectedFilter)
             .toList();
 
     return LayoutBuilder(
@@ -117,7 +130,7 @@ class _PendingScreenState extends State<PendingScreen> {
                             children: [
                               Expanded(
                                 child: Text(
-                                  'Pending',
+                                  'Tracking',
                                   style: TextStyle(
                                     color: const Color(0xFF1F252A),
                                     fontSize: isTablet ? 36 : 30,
@@ -214,7 +227,7 @@ class _PendingScreenState extends State<PendingScreen> {
   Widget _buildRefreshButton(bool isTablet) {
     return IconButton(
       key: const Key('pending_refresh_button'),
-      tooltip: 'Refresh pending requests',
+      tooltip: 'Refresh tracked requests',
       onPressed: widget.onRefresh == null || widget.isLoading ? null : _refresh,
       style: IconButton.styleFrom(
         minimumSize: Size.square(isTablet ? 50 : 44),
@@ -230,21 +243,23 @@ class _PendingScreenState extends State<PendingScreen> {
     );
   }
 
-  Widget _buildBody(List<PendingRequest> filteredList, bool isTablet) {
-    if (widget.isLoading && widget.requestList.isEmpty) {
+  Widget _buildBody(List<_TrackingEntry> filteredList, bool isTablet) {
+    final trackingIsEmpty =
+        widget.requestList.isEmpty && widget.refundItems.isEmpty;
+    if (widget.isLoading && trackingIsEmpty) {
       return _buildScrollableState(
         key: const Key('pending_loading_state'),
         icon: const SizedBox.square(
           dimension: 42,
           child: CircularProgressIndicator(color: _primaryBlue),
         ),
-        title: 'Loading pending requests…',
+        title: 'Loading tracked requests…',
         message: 'Please wait while we get the latest request updates.',
         isTablet: isTablet,
       );
     }
 
-    if (_hasError && widget.requestList.isEmpty) {
+    if (_hasError && trackingIsEmpty) {
       return _buildScrollableState(
         key: const Key('pending_error_state'),
         icon: Icon(
@@ -252,7 +267,7 @@ class _PendingScreenState extends State<PendingScreen> {
           size: isTablet ? 82 : 66,
           color: const Color(0xFF8A98A3),
         ),
-        title: 'Pending requests could not be loaded',
+        title: 'Tracked requests could not be loaded',
         message: widget.errorMessage!.trim(),
         isTablet: isTablet,
         action: _buildRetryButton('Try again'),
@@ -260,21 +275,19 @@ class _PendingScreenState extends State<PendingScreen> {
     }
 
     if (filteredList.isEmpty) {
-      final filtered = widget.requestList.isNotEmpty;
+      final filtered = !trackingIsEmpty;
       return _buildScrollableState(
         key: const Key('pending_empty_state'),
         icon: Icon(
-          filtered
-              ? Icons.filter_alt_off_rounded
-              : Icons.pending_actions_rounded,
+          filtered ? Icons.filter_alt_off_rounded : Icons.route_outlined,
           size: isTablet ? 88 : 70,
           color: const Color(0xFFB5C1C8),
         ),
         title:
-            filtered ? 'No requests match this filter' : 'No pending requests',
+            filtered ? 'No requests match this filter' : 'No tracked requests',
         message: filtered
             ? 'Choose All or another document type to see your requests.'
-            : 'New and in-progress document requests will appear here.',
+            : 'Active requests and refund updates will appear here.',
         isTablet: isTablet,
         action: filtered
             ? OutlinedButton(
@@ -407,7 +420,7 @@ class _PendingScreenState extends State<PendingScreen> {
   }
 
   Widget _buildCard(
-    PendingRequest item, {
+    _TrackingEntry item, {
     required bool isTablet,
     required VoidCallback onTap,
   }) {
@@ -518,6 +531,13 @@ class _PendingScreenState extends State<PendingScreen> {
 
   Color _getStatusColor(String status) {
     switch (status.toUpperCase()) {
+      case 'REFUND AVAILABLE':
+        return const Color(0xFFB45309);
+      case 'REFUND UNDER REVIEW':
+        return const Color(0xFF765B1B);
+      case 'REFUND APPROVED':
+      case 'REFUND PROCESSING':
+        return const Color(0xFF356A86);
       case 'PENDING FOR PAYMENT':
         return const Color(0xFFC67500);
       case 'PENDING TO COMPLETE':
@@ -532,4 +552,17 @@ class _PendingScreenState extends State<PendingScreen> {
         return const Color(0xFF8A6D00);
     }
   }
+}
+
+class _TrackingEntry {
+  const _TrackingEntry.request(PendingRequest this.request) : refundItem = null;
+
+  const _TrackingEntry.refund(HistoryItem this.refundItem) : request = null;
+
+  final PendingRequest? request;
+  final HistoryItem? refundItem;
+
+  String get docName => request?.docName ?? refundItem!.title;
+  DateTime get dateCreated => request?.dateCreated ?? refundItem!.date;
+  String get status => request?.status ?? refundItem!.refundTrackingStatus;
 }

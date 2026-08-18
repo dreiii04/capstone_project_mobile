@@ -4,6 +4,20 @@ import 'package:capstone_project/screens/pending_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+HistoryItem _refundLifecycleItem({String refundStatus = ''}) {
+  return HistoryItem(
+    transactionId: 'txn-refund',
+    title: 'Transcript of Records',
+    date: DateTime(2026, 8, 3),
+    purpose: 'Employment',
+    status: 'REJECTED',
+    isApproved: false,
+    totalAmount: 600,
+    paymentType: 'gcash',
+    refundStatus: refundStatus,
+  );
+}
+
 void main() {
   test('legacy None placeholders do not hide remarks fallback or refunds', () {
     final rejected = HistoryItem(
@@ -27,7 +41,35 @@ void main() {
     expect(rejected.canRequestRefund, isTrue);
   });
 
-  testWidgets('pending screen distinguishes loading from an empty list',
+  test('refund lifecycle keeps actionable updates in Tracking', () {
+    final available = _refundLifecycleItem();
+    final pending = _refundLifecycleItem(refundStatus: 'refund_pending');
+    final processing = _refundLifecycleItem(refundStatus: 'processing');
+
+    expect(available.shouldTrackRefund, isTrue);
+    expect(available.isRefundFinal, isFalse);
+    expect(available.refundTrackingStatus, 'REFUND AVAILABLE');
+
+    expect(pending.shouldTrackRefund, isTrue);
+    expect(pending.isRefundFinal, isFalse);
+    expect(pending.refundTrackingStatus, 'REFUND UNDER REVIEW');
+
+    expect(processing.shouldTrackRefund, isTrue);
+    expect(processing.isRefundFinal, isFalse);
+    expect(processing.refundTrackingStatus, 'REFUND PROCESSING');
+  });
+
+  test('final refund outcomes return to History', () {
+    final refunded = _refundLifecycleItem(refundStatus: 'refunded');
+    final rejected = _refundLifecycleItem(refundStatus: 'refund_rejected');
+
+    expect(refunded.isRefundFinal, isTrue);
+    expect(refunded.shouldTrackRefund, isFalse);
+    expect(rejected.isRefundFinal, isTrue);
+    expect(rejected.shouldTrackRefund, isFalse);
+  });
+
+  testWidgets('Tracking screen distinguishes loading from an empty list',
       (tester) async {
     await tester.pumpWidget(
       const MaterialApp(
@@ -36,8 +78,21 @@ void main() {
     );
 
     expect(find.byKey(const Key('pending_loading_state')), findsOneWidget);
-    expect(find.text('Loading pending requests…'), findsOneWidget);
-    expect(find.text('No pending requests'), findsNothing);
+    expect(find.text('Tracking'), findsOneWidget);
+    expect(find.text('Loading tracked requests…'), findsOneWidget);
+    expect(find.text('No tracked requests'), findsNothing);
+
+    await tester.pumpWidget(
+      const MaterialApp(home: PendingScreen(requestList: [])),
+    );
+    await tester.pump();
+
+    expect(find.text('Tracking'), findsOneWidget);
+    expect(find.text('No tracked requests'), findsOneWidget);
+    expect(
+      find.text('Active requests and refund updates will appear here.'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('pending refresh control calls the supplied loader',
@@ -56,6 +111,31 @@ void main() {
     await tester.pump();
 
     expect(refreshCount, 1);
+  });
+
+  testWidgets(
+      'Tracking shows a refund available entry and opens refund details',
+      (tester) async {
+    final refundAvailable = _refundLifecycleItem();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PendingScreen(
+          requestList: const [],
+          refundItems: [refundAvailable],
+        ),
+      ),
+    );
+
+    expect(find.text('Tracking'), findsOneWidget);
+    expect(find.text('Transcript of Records'), findsOneWidget);
+    expect(find.text('REFUND AVAILABLE'), findsOneWidget);
+
+    await tester.tap(find.text('Transcript of Records'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(HistoryDetailScreen), findsOneWidget);
+    expect(find.byKey(const Key('request_refund_button')), findsOneWidget);
   });
 
   testWidgets('history empty and error states always explain what happened',
@@ -85,7 +165,7 @@ void main() {
     await tester.pump();
     expect(find.text('No request history yet'), findsOneWidget);
     expect(
-      find.text('Completed and rejected requests will appear here.'),
+      find.text('Completed requests and finalized outcomes will appear here.'),
       findsOneWidget,
     );
     expect(find.text('None'), findsNothing);

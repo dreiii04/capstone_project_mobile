@@ -49,6 +49,8 @@ void main() {
     expect(find.byType(PaymentRefundScreen), findsOneWidget);
     expect(find.text('Refund summary'), findsOneWidget);
     expect(find.text('How the refund works'), findsOneWidget);
+    expect(find.text('Follow the status in Tracking'), findsOneWidget);
+    expect(find.text('Follow the status in History'), findsNothing);
     expect(find.text('PHP 600.00'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -78,6 +80,58 @@ void main() {
 
     expect(find.text('Refund destination'), findsOneWidget);
     expect(find.byKey(const Key('submit_refund_button')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('duplicate refund shows the existing-request dialog',
+      (tester) async {
+    final item = _historyItem();
+    var requestCount = 0;
+    await _setSize(tester, const Size(412, 715));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PaymentRefundScreen(
+          item: item,
+          requestRefund: ({
+            required transactionId,
+            required refundMethod,
+            required accountName,
+            required accountNumber,
+            bankName,
+            reason,
+          }) async {
+            requestCount += 1;
+            return {
+              'success': false,
+              'alreadyRequested': true,
+              'refundStatus': 'pending',
+            };
+          },
+        ),
+      ),
+    );
+
+    final fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(0), 'Refund Recipient');
+    await tester.enterText(fields.at(1), '09171234567');
+    final confirmation = find.byKey(
+      const Key('refund_confirmation_checkbox'),
+    );
+    await tester.ensureVisible(confirmation);
+    await tester.tap(confirmation);
+    final submitButton = find.byKey(const Key('submit_refund_button'));
+    await tester.ensureVisible(submitButton);
+    await tester.tap(submitButton);
+    await tester.pumpAndSettle();
+
+    expect(requestCount, 1);
+    expect(item.refundStatus, 'pending');
+    expect(find.text('Refund already requested'), findsOneWidget);
+    expect(
+      find.textContaining('Track the existing request in Tracking'),
+      findsOneWidget,
+    );
+    expect(find.text('Refund requested'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

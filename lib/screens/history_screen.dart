@@ -68,6 +68,45 @@ class HistoryItem {
     final value = refundStatus.trim();
     return value.isNotEmpty && !_isPlaceholder(value);
   }
+
+  String get normalizedRefundStatus =>
+      refundStatus.trim().toLowerCase().replaceAll(RegExp(r'[\s-]+'), '_');
+
+  bool get isRefundFinal {
+    final normalized = normalizedRefundStatus;
+    if (normalized.isEmpty) return false;
+    return normalized == 'refunded' ||
+        normalized.contains('complete') ||
+        normalized.contains('sent') ||
+        normalized.contains('paid_out') ||
+        normalized.contains('reject') ||
+        normalized.contains('declin') ||
+        normalized.contains('denied') ||
+        normalized.contains('cancel') ||
+        normalized.contains('failed');
+  }
+
+  bool get shouldTrackRefund {
+    if (!isRejected) return false;
+    if (canRequestRefund) return true;
+    return hasRefundRequest && !isRefundFinal;
+  }
+
+  String get refundTrackingStatus {
+    if (canRequestRefund) return 'REFUND AVAILABLE';
+    final normalized = normalizedRefundStatus;
+    if (normalized.contains('pending') || normalized.contains('review')) {
+      return 'REFUND UNDER REVIEW';
+    }
+    if (normalized.contains('approv')) return 'REFUND APPROVED';
+    if (normalized.contains('process')) return 'REFUND PROCESSING';
+    final readable = normalized
+        .split('_')
+        .where((part) => part.isNotEmpty)
+        .join(' ')
+        .toUpperCase();
+    return readable.isEmpty ? 'REFUND UPDATE' : 'REFUND $readable';
+  }
 }
 
 class HistoryScreen extends StatefulWidget {
@@ -319,7 +358,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
             : 'No request history yet',
         message: filtered
             ? 'Choose All or another document type to see your records.'
-            : 'Completed and rejected requests will appear here.',
+            : 'Completed requests and finalized outcomes will appear here.',
         isTablet: isTablet,
         action: filtered
             ? OutlinedButton(

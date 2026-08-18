@@ -1,4 +1,5 @@
 import 'package:capstone_project/models/profile_data.dart';
+import 'package:capstone_project/screens/change_password_screen.dart';
 import 'package:capstone_project/screens/edit_profile_screen.dart';
 import 'package:capstone_project/services/mongo_data_api_service.dart';
 import 'package:capstone_project/widgets/profile_avatar.dart';
@@ -266,6 +267,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
             // Edit Profile Button
             ElevatedButton(
+              key: const Key('profile_edit_button'),
               onPressed: () async {
                 final updated = await Navigator.push<ProfileData>(
                   context,
@@ -283,17 +285,52 @@ class _ProfileScreenState extends State<ProfileScreen> {
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: darkNavy,
-                fixedSize: Size(180.w, 45.h),
+                foregroundColor: Colors.white,
+                fixedSize: Size(210.w, 48.h),
+                elevation: 0,
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(20.r)),
               ),
               child: Text(
                 "Edit profile",
-                style: TextStyle(color: Colors.white, fontSize: 20.sp),
+                style: TextStyle(
+                  fontSize: 18.sp,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
 
-            SizedBox(height: 80.h),
+            SizedBox(height: 14.h),
+
+            // Change Password Button
+            ElevatedButton(
+              key: const Key('profile_change_password_button'),
+              onPressed: () => Navigator.push<bool>(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const ChangePasswordScreen(),
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: darkNavy,
+                foregroundColor: Colors.white,
+                fixedSize: Size(210.w, 48.h),
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20.r),
+                ),
+              ),
+              child: Text(
+                'Change password',
+                maxLines: 1,
+                style: TextStyle(
+                  fontSize: 18.sp,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+
+            SizedBox(height: 64.h),
 
             // Log out Button
             ElevatedButton(

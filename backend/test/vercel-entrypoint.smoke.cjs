@@ -11,11 +11,30 @@ const server = http.createServer(handler);
 server.listen(0, '127.0.0.1', async () => {
   try {
     const { port } = server.address();
-    const response = await fetch(`http://127.0.0.1:${port}/health`);
-    const body = await response.json();
+    for (const path of ['/health', '/api/health']) {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`);
+      const body = await response.json();
 
-    if (response.status !== 200 || body.success !== true) {
-      throw new Error(`Unexpected health response: ${response.status}`);
+      if (response.status !== 200 || body.success !== true) {
+        throw new Error(
+          `Unexpected health response for ${path}: ${response.status}`,
+        );
+      }
+    }
+
+    const loginResponse = await fetch(
+      `http://127.0.0.1:${port}/api/auth/login`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      },
+    );
+    const loginBody = await loginResponse.json();
+    if (loginResponse.status !== 400 || loginBody.success !== false) {
+      throw new Error(
+        `Unexpected shared login response: ${loginResponse.status}`,
+      );
     }
 
     console.log('Vercel backend entrypoint smoke test passed.');

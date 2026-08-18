@@ -1,10 +1,38 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../services/mongo_data_api_service.dart';
 import '../widgets/simple_message_dialog.dart';
 
+typedef RegisterOtpRequester = Future<OtpChallenge> Function({
+  required String studentStatus,
+  required String educationalLevel,
+  required String firstName,
+  required String lastName,
+  required String email,
+  required String password,
+  String? program,
+  String? yearGraduated,
+  String? lastYearAttended,
+  String? lastGradeLevelCompleted,
+  String? lastYearLevelCompleted,
+});
+typedef RegisterOtpVerifier = Future<void> Function({
+  required String email,
+  required String otp,
+  required String challengeToken,
+});
+
 class RegisterScreen extends StatefulWidget {
-  const RegisterScreen({super.key});
+  const RegisterScreen({
+    super.key,
+    this.otpRequester,
+    this.otpVerifier,
+  });
+
+  final RegisterOtpRequester? otpRequester;
+  final RegisterOtpVerifier? otpVerifier;
 
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
@@ -42,20 +70,32 @@ class _RegisterScreenState extends State<RegisterScreen> {
     'BSED',
   ];
   late final List<String> _graduationYears;
-  String? _role;
-  String? _academicYear;
+  String? _studentStatus;
+  String? _educationalLevel;
+  String? _yearGraduated;
+  String? _lastYearAttended;
+  String? _lastGradeLevelCompleted;
+  String? _lastYearLevelCompleted;
   String? _program;
   bool _acceptedTerms = false;
   bool _isPasswordObscure = true;
   bool _isConfirmPasswordObscure = true;
   bool _isSubmitting = false;
 
-  bool get _isAlumni => _role == 'alumni';
-  bool get _isFormerStudent => _role == 'former_student';
-  bool get _isPostgraduate => _role == 'masters' || _role == 'doctorate';
-  String get _resolvedProgram => _isPostgraduate
-      ? _postgraduateProgramController.text.trim()
-      : _program ?? '';
+  bool get _isAlumni => _studentStatus == 'alumni';
+  bool get _isFormerStudent => _studentStatus == 'former_student';
+  bool get _isBasicEducation =>
+      _educationalLevel == 'jhs' || _educationalLevel == 'shs';
+  bool get _isPostgraduate =>
+      _educationalLevel == 'masters' || _educationalLevel == 'doctorate';
+  bool get _requiresProgram =>
+      _educationalLevel == 'bachelors' || _isPostgraduate;
+  String get _resolvedProgram {
+    if (!_requiresProgram) return '';
+    return _isPostgraduate
+        ? _postgraduateProgramController.text.trim()
+        : _program ?? '';
+  }
 
   @override
   void initState() {
@@ -140,17 +180,51 @@ class _RegisterScreenState extends State<RegisterScreen> {
     setState(() => _isSubmitting = true);
     try {
       final email = _emailController.text.trim().toLowerCase();
-      await MongoDataApiService.instance.createUser(
-        role: _role!,
-        firstName: _firstNameController.text.trim(),
-        lastName: _lastNameController.text.trim(),
-        email: email,
-        password: _passwordController.text,
-        yearLevel: _academicYear,
-        program: _resolvedProgram,
-      );
+      final requester = widget.otpRequester;
+      final challenge = requester != null
+          ? await requester(
+              studentStatus: _studentStatus!,
+              educationalLevel: _educationalLevel!,
+              firstName: _firstNameController.text.trim(),
+              lastName: _lastNameController.text.trim(),
+              email: email,
+              password: _passwordController.text,
+              program: _requiresProgram ? _resolvedProgram : null,
+              yearGraduated: _isAlumni ? _yearGraduated : null,
+              lastYearAttended: _isFormerStudent ? _lastYearAttended : null,
+              lastGradeLevelCompleted: _isFormerStudent && _isBasicEducation
+                  ? _lastGradeLevelCompleted
+                  : null,
+              lastYearLevelCompleted: _isFormerStudent && !_isBasicEducation
+                  ? _lastYearLevelCompleted
+                  : null,
+            )
+          : await MongoDataApiService.instance.requestRegisterOtp(
+              studentStatus: _studentStatus!,
+              educationalLevel: _educationalLevel!,
+              firstName: _firstNameController.text.trim(),
+              lastName: _lastNameController.text.trim(),
+              email: email,
+              password: _passwordController.text,
+              program: _requiresProgram ? _resolvedProgram : null,
+              yearGraduated: _isAlumni ? _yearGraduated : null,
+              lastYearAttended: _isFormerStudent ? _lastYearAttended : null,
+              lastGradeLevelCompleted: _isFormerStudent && _isBasicEducation
+                  ? _lastGradeLevelCompleted
+                  : null,
+              lastYearLevelCompleted: _isFormerStudent && !_isBasicEducation
+                  ? _lastYearLevelCompleted
+                  : null,
+            );
 
       if (!mounted) return;
+      final verified = await _showOtpVerificationDialog(
+        email: email,
+        challengeToken: challenge.challengeToken,
+        developmentOtp: kDebugMode ? challenge.developmentOtp : null,
+      );
+      if (!mounted || !verified) return;
+
       await showSimpleMessageDialog(
         context,
         'Your account was created successfully. You can now log in.',
@@ -168,6 +242,38 @@ class _RegisterScreenState extends State<RegisterScreen> {
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
+  }
+
+  Future<bool> _showOtpVerificationDialog({
+    required String email,
+    required String challengeToken,
+    String? developmentOtp,
+  }) async {
+    final verified = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _RegistrationOtpDialog(
+        email: email,
+        developmentOtp: developmentOtp,
+        onVerify: (otp) async {
+          final verifier = widget.otpVerifier;
+          if (verifier != null) {
+            await verifier(
+              email: email,
+              otp: otp,
+              challengeToken: challengeToken,
+            );
+          } else {
+            await MongoDataApiService.instance.verifyRegisterOtp(
+              email: email,
+              otp: otp,
+              challengeToken: challengeToken,
+            );
+          }
+        },
+      ),
+    );
+    return verified ?? false;
   }
 
   @override
@@ -252,8 +358,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                   ),
                                 ),
                                 const SizedBox(height: 25),
-                                _buildAccountTypeField(),
-                                const SizedBox(height: 15),
                                 _textField(
                                   key: const Key('first_name_field'),
                                   controller: _firstNameController,
@@ -287,9 +391,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                   autofillHints: const [AutofillHints.email],
                                 ),
                                 const SizedBox(height: 15),
-                                _buildYearField(),
-                                const SizedBox(height: 15),
-                                _buildProgramField(),
+                                _buildStudentStatusField(),
+                                AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 180),
+                                  child: _buildAcademicFields(),
+                                ),
                                 const SizedBox(height: 15),
                                 _textField(
                                   key: const Key(
@@ -423,57 +529,132 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _buildAccountTypeField() {
+  Widget _buildStudentStatusField() {
     return DropdownButtonFormField<String>(
-      key: const Key('account_type_field'),
-      initialValue: _role,
+      key: const Key('student_status_field'),
+      initialValue: _studentStatus,
       isExpanded: true,
-      decoration: _inputDecoration(hint: 'Requester Type'),
+      decoration: _inputDecoration(hint: 'Student Status'),
       items: const [
         DropdownMenuItem(
-          key: Key('account_type_former_student'),
+          key: Key('student_status_former_student'),
           value: 'former_student',
-          child: Text('Former / stopped student'),
+          child: Text('Former Student'),
         ),
         DropdownMenuItem(
-          key: Key('account_type_alumni'),
+          key: Key('student_status_alumni'),
           value: 'alumni',
           child: Text('Alumni'),
-        ),
-        DropdownMenuItem(
-          key: Key('account_type_masters'),
-          value: 'masters',
-          child: Text("Master's"),
-        ),
-        DropdownMenuItem(
-          key: Key('account_type_doctorate'),
-          value: 'doctorate',
-          child: Text('Doctorate'),
         ),
       ],
       onChanged: (value) {
         setState(() {
-          _role = value;
-          _academicYear = null;
-          _program = null;
-          _postgraduateProgramController.clear();
+          _studentStatus = value;
+          _clearAcademicValues(clearEducationalLevel: true);
         });
       },
       validator: (value) =>
-          value == null ? 'Select your account type to continue' : null,
+          value == null ? 'Select your student status to continue' : null,
     );
   }
 
-  Widget _buildYearField() {
-    final hint = switch (_role) {
-      'alumni' => 'Year Graduated',
-      'former_student' => 'Year Last Attended',
-      'masters' || 'doctorate' => 'Year Graduated / Last Attended',
-      _ => 'Year Graduated / Last Attended',
-    };
+  void _clearAcademicValues({bool clearEducationalLevel = false}) {
+    if (clearEducationalLevel) _educationalLevel = null;
+    _yearGraduated = null;
+    _lastYearAttended = null;
+    _lastGradeLevelCompleted = null;
+    _lastYearLevelCompleted = null;
+    _program = null;
+    _postgraduateProgramController.clear();
+  }
+
+  Widget _buildAcademicFields() {
+    if (_studentStatus == null) {
+      return const SizedBox.shrink(key: ValueKey('academic_fields_hidden'));
+    }
+
+    return Column(
+      key: ValueKey(
+        'academic_fields_${_studentStatus}_${_educationalLevel ?? 'none'}',
+      ),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 15),
+        _buildEducationalLevelField(),
+        if (_educationalLevel != null) ...[
+          if (_requiresProgram) ...[
+            const SizedBox(height: 15),
+            _buildProgramField(),
+          ],
+          if (_isAlumni) ...[
+            const SizedBox(height: 15),
+            _buildYearDropdown(
+              key: const Key('year_graduated_field'),
+              hint: 'Year Graduated',
+              value: _yearGraduated,
+              onChanged: (value) => setState(() => _yearGraduated = value),
+              validationMessage: 'Select your year graduated',
+            ),
+          ],
+          if (_isFormerStudent) ...[
+            const SizedBox(height: 15),
+            _buildYearDropdown(
+              key: const Key('last_year_attended_field'),
+              hint: 'Last Year Attended',
+              value: _lastYearAttended,
+              onChanged: (value) => setState(() => _lastYearAttended = value),
+              validationMessage: 'Select your last year attended',
+            ),
+            const SizedBox(height: 15),
+            _isBasicEducation
+                ? _buildLastGradeLevelField()
+                : _buildLastYearLevelField(),
+          ],
+        ],
+      ],
+    );
+  }
+
+  Widget _buildEducationalLevelField() {
+    final hint = _isFormerStudent
+        ? 'Last Educational Level Attended'
+        : 'Highest Educational Level Completed';
     return DropdownButtonFormField<String>(
-      key: ValueKey('academic_year_${_role ?? 'none'}'),
-      initialValue: _academicYear,
+      key: ValueKey('educational_level_${_studentStatus ?? 'none'}'),
+      initialValue: _educationalLevel,
+      isExpanded: true,
+      decoration: _inputDecoration(hint: hint),
+      items: const [
+        DropdownMenuItem(value: 'jhs', child: Text('JHS')),
+        DropdownMenuItem(value: 'shs', child: Text('SHS')),
+        DropdownMenuItem(value: 'bachelors', child: Text("Bachelor's")),
+        DropdownMenuItem(value: 'masters', child: Text("Master's")),
+        DropdownMenuItem(value: 'doctorate', child: Text('Doctorate')),
+      ],
+      onChanged: (value) {
+        setState(() {
+          _educationalLevel = value;
+          _clearAcademicValues();
+        });
+      },
+      validator: (value) => value == null
+          ? _isFormerStudent
+              ? 'Select the last educational level you attended'
+              : 'Select your highest completed educational level'
+          : null,
+    );
+  }
+
+  Widget _buildYearDropdown({
+    required Key key,
+    required String hint,
+    required String? value,
+    required ValueChanged<String?> onChanged,
+    required String validationMessage,
+  }) {
+    return DropdownButtonFormField<String>(
+      key: key,
+      initialValue: value,
       isExpanded: true,
       decoration: _inputDecoration(hint: hint),
       items: _graduationYears
@@ -484,14 +665,55 @@ class _RegisterScreenState extends State<RegisterScreen> {
             ),
           )
           .toList(),
-      onChanged: (value) => setState(() => _academicYear = value),
-      validator: (value) {
-        if (_role == null) return null;
-        if (value != null) return null;
-        if (_isAlumni) return 'Select your year graduated';
-        if (_isFormerStudent) return 'Select your year last attended';
-        return 'Select your year graduated or last attended';
-      },
+      onChanged: onChanged,
+      validator: (selected) => selected == null ? validationMessage : null,
+    );
+  }
+
+  Widget _buildLastGradeLevelField() {
+    final options = _educationalLevel == 'jhs'
+        ? const ['Grade 7', 'Grade 8', 'Grade 9', 'Grade 10']
+        : const ['Grade 11', 'Grade 12'];
+    return DropdownButtonFormField<String>(
+      key: ValueKey('last_grade_level_${_educationalLevel ?? 'none'}'),
+      initialValue: _lastGradeLevelCompleted,
+      isExpanded: true,
+      decoration: _inputDecoration(hint: 'Last Grade Level Completed'),
+      items: options
+          .map(
+            (grade) => DropdownMenuItem(value: grade, child: Text(grade)),
+          )
+          .toList(),
+      onChanged: (value) => setState(() => _lastGradeLevelCompleted = value),
+      validator: (value) =>
+          value == null ? 'Select your last completed grade level' : null,
+    );
+  }
+
+  Widget _buildLastYearLevelField() {
+    const options = [
+      '1st Year',
+      '2nd Year',
+      '3rd Year',
+      '4th Year',
+      '5th Year',
+    ];
+    return DropdownButtonFormField<String>(
+      key: const Key('last_year_level_completed_field'),
+      initialValue: _lastYearLevelCompleted,
+      isExpanded: true,
+      decoration: _inputDecoration(hint: 'Last Year Level Completed'),
+      items: options
+          .map(
+            (yearLevel) => DropdownMenuItem(
+              value: yearLevel,
+              child: Text(yearLevel),
+            ),
+          )
+          .toList(),
+      onChanged: (value) => setState(() => _lastYearLevelCompleted = value),
+      validator: (value) =>
+          value == null ? 'Select your last completed year level' : null,
     );
   }
 
@@ -500,10 +722,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return _textField(
         key: const Key('postgraduate_program_field'),
         controller: _postgraduateProgramController,
-        hint: _role == 'doctorate' ? 'Doctorate Program' : "Master's Program",
+        hint: 'Program',
         textCapitalization: TextCapitalization.words,
-        validator: (value) =>
-            value == null || value.trim().isEmpty ? 'Enter your program' : null,
+        validator: (value) {
+          final program = value?.trim() ?? '';
+          if (program.isEmpty) return 'Enter your program';
+          if (program.length < 2 || program.length > 100) {
+            return 'Use 2-100 characters for your program';
+          }
+          return null;
+        },
       );
     }
 
@@ -662,5 +890,138 @@ class _RegisterScreenState extends State<RegisterScreen> {
     if (score <= 2) return 'Weak';
     if (score == 3) return 'Medium';
     return 'Strong';
+  }
+}
+
+class _RegistrationOtpDialog extends StatefulWidget {
+  const _RegistrationOtpDialog({
+    required this.email,
+    required this.developmentOtp,
+    required this.onVerify,
+  });
+
+  final String email;
+  final String? developmentOtp;
+  final Future<void> Function(String otp) onVerify;
+
+  @override
+  State<_RegistrationOtpDialog> createState() => _RegistrationOtpDialogState();
+}
+
+class _RegistrationOtpDialogState extends State<_RegistrationOtpDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _otpController = TextEditingController();
+
+  bool _isVerifying = false;
+  String? _verificationError;
+
+  @override
+  void dispose() {
+    _otpController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _verify() async {
+    if (_isVerifying || !(_formKey.currentState?.validate() ?? false)) return;
+
+    setState(() {
+      _isVerifying = true;
+      _verificationError = null;
+    });
+    try {
+      await widget.onVerify(_otpController.text);
+      if (mounted) Navigator.of(context).pop(true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _isVerifying = false;
+        _verificationError = error
+            .toString()
+            .replaceFirst('Exception: ', '')
+            .replaceFirst('Invalid argument(s): ', '');
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Verify your email'),
+      content: Form(
+        key: _formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Enter the six-digit code sent to ${widget.email}. The code expires in 10 minutes.',
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                key: const Key('registration_otp_field'),
+                controller: _otpController,
+                autofocus: true,
+                enabled: !_isVerifying,
+                keyboardType: TextInputType.number,
+                textInputAction: TextInputAction.done,
+                autofillHints: const [AutofillHints.oneTimeCode],
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(6),
+                ],
+                validator: (value) =>
+                    RegExp(r'^\d{6}$').hasMatch(value?.trim() ?? '')
+                        ? null
+                        : 'Enter the six-digit verification code',
+                onFieldSubmitted: (_) => _verify(),
+                decoration: const InputDecoration(
+                  labelText: 'Verification code',
+                  prefixIcon: Icon(Icons.password_rounded),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              if (widget.developmentOtp?.isNotEmpty == true) ...[
+                const SizedBox(height: 10),
+                Text(
+                  'Development code: ${widget.developmentOtp}',
+                  key: const Key('registration_development_otp'),
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ],
+              if (_verificationError != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  _verificationError!,
+                  key: const Key('registration_otp_error'),
+                  style: const TextStyle(
+                    color: Color(0xFFB3261E),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed:
+              _isVerifying ? null : () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('verify_registration_otp_button'),
+          onPressed: _isVerifying ? null : _verify,
+          child: _isVerifying
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Verify'),
+        ),
+      ],
+    );
   }
 }

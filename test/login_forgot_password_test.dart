@@ -1,5 +1,7 @@
 import 'package:capstone_project/screens/forgot_password_screen.dart';
+import 'package:capstone_project/screens/home_screen.dart';
 import 'package:capstone_project/screens/login_screen.dart';
+import 'package:capstone_project/services/mongo_data_api_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -79,23 +81,66 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('login displays the centralized API account-status message',
+      (tester) async {
+    await _setSize(tester, const Size(412, 715));
+    await tester.pumpWidget(
+      _app(
+        LogInScreen(
+          loginHandler: (_, __) async {
+            throw Exception(
+              'This account has been deactivated. Contact the administrator.',
+            );
+          },
+        ),
+      ),
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('login_email_field')),
+      'user@example.com',
+    );
+    await tester.enterText(
+      find.byKey(const Key('login_password_field')),
+      'Strong1!',
+    );
+    await tester.tap(find.byKey(const Key('login_button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Unable to log in'), findsOneWidget);
+    expect(
+      find.text(
+        'This account has been deactivated. Contact the administrator.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.byType(HomeScreen), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('forgot password reveals OTP only after sending a code',
       (tester) async {
     await _setSize(tester, const Size(412, 715));
     String? requestedEmail;
     String? verifiedEmail;
     String? verifiedOtp;
+    String? verifiedChallengeToken;
 
     await tester.pumpWidget(
       _app(
         PasswordScreen(
           otpRequester: (email) async {
             requestedEmail = email;
-            return '123456';
+            return OtpChallenge(
+              challengeToken: 'password-reset-challenge',
+              developmentOtp: '123456',
+            );
           },
-          otpVerifier: (email, otp) async {
+          otpVerifier: (email, otp, challengeToken) async {
             verifiedEmail = email;
             verifiedOtp = otp;
+            verifiedChallengeToken = challengeToken;
             return 'reset-token';
           },
         ),
@@ -131,6 +176,7 @@ void main() {
 
     expect(verifiedEmail, 'user@example.com');
     expect(verifiedOtp, '123456');
+    expect(verifiedChallengeToken, 'password-reset-challenge');
     expect(find.byType(ResetPasswordScreen), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

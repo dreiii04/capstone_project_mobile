@@ -123,6 +123,48 @@ function isValidEmail(email) {
   return email.length <= 254 && emailRegex.test(email);
 }
 
+const inactiveAccountMessage =
+  'This account has been deactivated. Contact the administrator.';
+const inactiveAccountValues = new Set([
+  '0',
+  'banned',
+  'blocked',
+  'deactivated',
+  'disabled',
+  'false',
+  'in_active',
+  'inactive',
+  'locked',
+  'no',
+  'not_active',
+  'off',
+  'suspended',
+]);
+
+function isInactiveAccountValue(value) {
+  if (value === false || value === 0) return true;
+  if (typeof value !== 'string') return false;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  return inactiveAccountValues.has(normalized);
+}
+
+function isAccountInactive(user) {
+  if (!user) return false;
+  return [
+    user.accountStatus,
+    user.account_status,
+    user.status,
+    user.activeStatus,
+    user.isActive,
+    user.is_active,
+    user.active,
+    user.enabled,
+  ].some(isInactiveAccountValue);
+}
+
 function makeUserId() {
   return randomBytes(12).toString('hex');
 }
@@ -209,7 +251,7 @@ async function getUserFromAuth(payload) {
   const sub = String(payload.sub || '').trim();
   if (!sub) return null;
   const user = await getUserById(sub);
-  if (!user) return null;
+  if (!user || isAccountInactive(user)) return null;
   const tokenSessionVersion = Number(payload.sv || 0);
   const currentSessionVersion = Number(user.sessionVersion || 0);
   if (!Number.isSafeInteger(tokenSessionVersion) ||
@@ -2627,10 +2669,12 @@ app.post('/refunds', requireAuth, writeLimiter, async (req, res, next) => {
     if (existingRefund) {
       return res.status(409).json({
         success: false,
+        alreadyRequested: true,
         message: 'A refund has already been requested for this payment.',
         refundStatus: existingRefund.status || 'pending',
         refundInstructions:
-          'You will receive a notification when the refund status changes.',
+          'Track the existing request in Tracking. Contact the Registrar if ' +
+          'you need to correct the refund destination.',
       });
     }
 
@@ -3119,6 +3163,13 @@ app.post(
         .json({ success: false, message: 'Invalid email or password.' });
     }
 
+    if (isAccountInactive(user)) {
+      return res.status(403).json({
+        success: false,
+        message: inactiveAccountMessage,
+      });
+    }
+
     const session = await issueTokensForUser(user);
     if (!session) {
       return res.status(409).json({
@@ -3154,6 +3205,13 @@ app.post('/auth/refresh', async (req, res, next) => {
       return res
         .status(401)
         .json({ success: false, message: 'Invalid refresh session.' });
+    }
+
+    if (isAccountInactive(user)) {
+      return res.status(403).json({
+        success: false,
+        message: inactiveAccountMessage,
+      });
     }
 
     const tokenHash = hashRefreshToken(refreshToken);

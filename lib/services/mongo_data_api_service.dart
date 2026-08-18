@@ -8,21 +8,41 @@ import 'package:capstone_project/models/profile_data.dart';
 import 'package:http/http.dart' as http;
 import 'token_storage.dart';
 
-class MongoDataApiService {
-  MongoDataApiService._() {
-    _init();
+class OtpChallenge {
+  OtpChallenge({
+    required String challengeToken,
+    String? developmentOtp,
+  })  : challengeToken = challengeToken.trim(),
+        developmentOtp = developmentOtp?.trim() {
+    if (this.challengeToken.isEmpty) {
+      throw ArgumentError.value(
+        challengeToken,
+        'challengeToken',
+        'An OTP challenge token is required.',
+      );
+    }
   }
 
+  final String challengeToken;
+  final String? developmentOtp;
+}
+
+class MongoDataApiService {
+  MongoDataApiService._();
+
   static final MongoDataApiService instance = MongoDataApiService._();
-  static const Duration _timeout = Duration(seconds: 12);
+  // OTP requests can include a 5-second mailbox check followed by SMTP
+  // delivery, whose socket timeout is 15 seconds.
+  static const Duration _timeout = Duration(seconds: 30);
 
   String? _accessToken;
   String? _refreshToken;
   String? _currentEmail;
   DateTime? _accessTokenExpiresAt;
   final TokenStorage _storage = TokenStorage();
+  Future<void>? _initialization;
 
-  Uri _uri(String path) => Uri.parse('$authApiBaseUrl$path');
+  Uri _uri(String path) => ApiConstants.uri(path);
 
   bool get hasSession => _accessToken != null && _refreshToken != null;
   String? get accessToken => _accessToken;
@@ -33,29 +53,40 @@ class MongoDataApiService {
     return {'Authorization': 'Bearer $_accessToken'};
   }
 
-  void _init() {
-    // Fire-and-forget load of persisted tokens
-    _loadStoredSession();
+  Future<void> initialize() {
+    final existing = _initialization;
+    if (existing != null) return existing;
+
+    final initialization = _loadStoredSession();
+    _initialization = initialization;
+    return initialization;
   }
 
   Future<void> _loadStoredSession() async {
-    try {
-      final a = await _storage.readAccessToken();
-      final r = await _storage.readRefreshToken();
-      final eMillis = await _storage.readExpiryMillis();
-      final email = await _storage.readEmail();
+    final accessToken = await _storage.readAccessToken();
+    final refreshToken = await _storage.readRefreshToken();
+    final expiryMillis = await _storage.readExpiryMillis();
+    final email = await _storage.readEmail();
 
-      if (a != null && r != null) {
-        _accessToken = a;
-        _refreshToken = r;
-        if (eMillis != null) {
-          _accessTokenExpiresAt = DateTime.fromMillisecondsSinceEpoch(eMillis);
-        }
-        if (email != null && email.trim().isNotEmpty) {
-          _currentEmail = email.trim();
-        }
-      }
-    } catch (_) {}
+    final hasCompleteSession = accessToken?.trim().isNotEmpty == true &&
+        refreshToken?.trim().isNotEmpty == true &&
+        email?.trim().isNotEmpty == true;
+    final hasAnySessionValue = accessToken != null ||
+        refreshToken != null ||
+        expiryMillis != null ||
+        email != null;
+
+    if (!hasCompleteSession) {
+      if (hasAnySessionValue) await _storage.clear();
+      return;
+    }
+
+    _accessToken = accessToken!.trim();
+    _refreshToken = refreshToken!.trim();
+    _currentEmail = email!.trim();
+    if (expiryMillis != null) {
+      _accessTokenExpiresAt = DateTime.fromMillisecondsSinceEpoch(expiryMillis);
+    }
   }
 
   Future<_ApiResponse> _postJson(
@@ -196,16 +227,22 @@ class MongoDataApiService {
     return 'Something went wrong. Please try again.';
   }
 
-  void _clearSession() {
+  void _discardSessionInMemory() {
     _accessToken = null;
     _refreshToken = null;
     _currentEmail = null;
     _accessTokenExpiresAt = null;
-    // clear persisted tokens as well
-    _storage.clear();
   }
 
-  void _applySession(Map<String, dynamic> data, {String? emailFallback}) {
+  Future<void> _clearSession() async {
+    _discardSessionInMemory();
+    await _storage.clear();
+  }
+
+  Future<void> _applySession(
+    Map<String, dynamic> data, {
+    String? emailFallback,
+  }) async {
     final accessToken = data['accessToken']?.toString().trim() ?? '';
     final refreshToken = data['refreshToken']?.toString().trim() ?? '';
 
@@ -213,43 +250,57 @@ class MongoDataApiService {
       throw Exception('Missing session tokens.');
     }
 
-    _accessToken = accessToken;
-    _refreshToken = refreshToken;
-
+    String? currentEmail;
     final user = data['user'];
     if (user is Map) {
       final email = user['email'];
       if (email is String && email.trim().isNotEmpty) {
-        _currentEmail = email.trim();
+        currentEmail = email.trim();
       }
     }
 
-    if ((_currentEmail == null || _currentEmail!.isEmpty) &&
-        emailFallback != null) {
-      _currentEmail = emailFallback.trim();
+    if ((currentEmail == null || currentEmail.isEmpty) &&
+        emailFallback?.trim().isNotEmpty == true) {
+      currentEmail = emailFallback!.trim();
+    }
+    if (currentEmail == null || currentEmail.isEmpty) {
+      throw Exception('Missing session email.');
     }
 
+    DateTime? expiresAt;
     final expiresIn = data['expiresInSeconds'];
     if (expiresIn is num) {
-      _accessTokenExpiresAt =
-          DateTime.now().add(Duration(seconds: expiresIn.toInt()));
+      expiresAt = DateTime.now().add(Duration(seconds: expiresIn.toInt()));
     }
-    // persist tokens
-    _storage.writeAccessToken(_accessToken!);
-    _storage.writeRefreshToken(_refreshToken!);
-    if (_accessTokenExpiresAt != null) {
-      _storage.writeExpiryMillis(_accessTokenExpiresAt!.millisecondsSinceEpoch);
+
+    try {
+      await _storage.writeSession(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        expiryMillis: expiresAt?.millisecondsSinceEpoch,
+        email: currentEmail,
+      );
+    } catch (_) {
+      _discardSessionInMemory();
+      try {
+        await _storage.clear();
+      } catch (_) {
+        // Preserve the original secure-storage error.
+      }
+      rethrow;
     }
-    if (_currentEmail != null) {
-      _storage.writeEmail(_currentEmail!);
-    }
+
+    _accessToken = accessToken;
+    _refreshToken = refreshToken;
+    _currentEmail = currentEmail;
+    _accessTokenExpiresAt = expiresAt;
   }
 
   Future<void> _refreshOrThrow() async {
     try {
       await refreshSession();
     } catch (_) {
-      _clearSession();
+      await _clearSession();
       throw Exception('Session expired. Please log in again.');
     }
   }
@@ -268,62 +319,55 @@ class MongoDataApiService {
     }
   }
 
-  Future<void> createUser({
-    required String role,
+  Future<OtpChallenge> requestRegisterOtp({
+    required String studentStatus,
+    required String educationalLevel,
     required String firstName,
     required String lastName,
     required String email,
     required String password,
-    String? schoolEmail,
-    String? studentId,
-    String? yearLevel,
     String? program,
+    String? yearGraduated,
+    String? lastYearAttended,
+    String? lastGradeLevelCompleted,
+    String? lastYearLevelCompleted,
   }) async {
-    final response = await _postJson('/auth/register', {
-      'role': role.trim(),
+    final body = <String, dynamic>{
+      'studentStatus': studentStatus.trim(),
+      'educationalLevel': educationalLevel.trim(),
       'firstName': firstName.trim(),
       'lastName': lastName.trim(),
       'email': email.trim(),
       'password': password.trim(),
-      'schoolEmail': (schoolEmail ?? '').trim(),
-      'studentId': (studentId ?? '').trim(),
-      'yearLevel': (yearLevel ?? '').trim(),
-      'program': (program ?? '').trim(),
-    });
-
-    if (response.statusCode == 201 && response.data['success'] == true) {
-      return;
+    };
+    if (program?.trim().isNotEmpty == true) {
+      body['program'] = program!.trim();
+    }
+    if (yearGraduated?.trim().isNotEmpty == true) {
+      body['yearGraduated'] = yearGraduated!.trim();
+    }
+    if (lastYearAttended?.trim().isNotEmpty == true) {
+      body['lastYearAttended'] = lastYearAttended!.trim();
+    }
+    if (lastGradeLevelCompleted?.trim().isNotEmpty == true) {
+      body['lastGradeLevelCompleted'] = lastGradeLevelCompleted!.trim();
+    }
+    if (lastYearLevelCompleted?.trim().isNotEmpty == true) {
+      body['lastYearLevelCompleted'] = lastYearLevelCompleted!.trim();
     }
 
-    throw Exception(_messageFor(response.data, 'Registration failed.'));
-  }
-
-  Future<String?> requestRegisterOtp({
-    required String role,
-    required String firstName,
-    required String lastName,
-    required String email,
-    required String password,
-    required String yearLevel,
-    required String program,
-    String? schoolEmail,
-    String? studentId,
-  }) async {
-    final response = await _postJson('/auth/register/request-otp', {
-      'role': role.trim(),
-      'firstName': firstName.trim(),
-      'lastName': lastName.trim(),
-      'email': email.trim(),
-      'password': password.trim(),
-      'schoolEmail': (schoolEmail ?? '').trim(),
-      'studentId': (studentId ?? '').trim(),
-      'yearLevel': yearLevel.trim(),
-      'program': program.trim(),
-    });
+    final response = await _postJson('/auth/register/request-otp', body);
 
     if (response.statusCode == 200 && response.data['success'] == true) {
+      final challengeToken = response.data['challengeToken'];
+      if (challengeToken is! String || challengeToken.trim().isEmpty) {
+        throw Exception('Missing OTP challenge token.');
+      }
       final otp = response.data['otp'];
-      return otp?.toString();
+      return OtpChallenge(
+        challengeToken: challengeToken,
+        developmentOtp: otp?.toString(),
+      );
     }
 
     throw Exception(_messageFor(response.data, 'Failed to request OTP.'));
@@ -332,10 +376,20 @@ class MongoDataApiService {
   Future<void> verifyRegisterOtp({
     required String email,
     required String otp,
+    required String challengeToken,
   }) async {
+    final normalizedChallengeToken = challengeToken.trim();
+    if (normalizedChallengeToken.isEmpty) {
+      throw ArgumentError.value(
+        challengeToken,
+        'challengeToken',
+        'An OTP challenge token is required.',
+      );
+    }
     final response = await _postJson('/auth/register/verify-otp', {
       'email': email.trim(),
       'otp': otp.trim(),
+      'challengeToken': normalizedChallengeToken,
     });
 
     if ((response.statusCode == 200 || response.statusCode == 201) &&
@@ -369,18 +423,16 @@ class MongoDataApiService {
 
   Future<ProfileData> updateProfile({
     required ProfileData profile,
-    String? newPassword,
   }) async {
     if (_accessToken == null) {
       throw Exception('Not authenticated.');
     }
 
-    final body = profile.toJson();
-    if (newPassword != null && newPassword.trim().isNotEmpty) {
-      body['newPassword'] = newPassword.trim();
-    }
-
-    final response = await _putJson('/profile', body, withAuth: true);
+    final response = await _putJson(
+      '/profile',
+      profile.toJson(),
+      withAuth: true,
+    );
     if (response.statusCode == 200 && response.data['success'] == true) {
       final user = response.data['user'];
       if (user is Map<String, dynamic>) {
@@ -396,15 +448,54 @@ class MongoDataApiService {
     throw Exception(_messageFor(response.data, 'Failed to update profile.'));
   }
 
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    if (_accessToken == null) {
+      throw Exception('Not authenticated.');
+    }
+    if (currentPassword.isEmpty) {
+      throw ArgumentError.value(
+        currentPassword,
+        'currentPassword',
+        'Current password is required.',
+      );
+    }
+
+    final response = await _putJson(
+      '/profile/password',
+      {
+        'currentPassword': currentPassword,
+        'newPassword': newPassword,
+      },
+      withAuth: true,
+    );
+    if (response.statusCode == 200 && response.data['success'] == true) {
+      try {
+        await _applySession(
+          response.data,
+          emailFallback: _currentEmail,
+        );
+      } catch (_) {
+        await _clearSession();
+        rethrow;
+      }
+      return;
+    }
+
+    throw Exception(_messageFor(response.data, 'Failed to change password.'));
+  }
+
   Future<bool> login({
     required String email,
     required String password,
     String? role,
   }) async {
-    _clearSession();
+    await _clearSession();
     final body = {
       'email': email.trim().toLowerCase(),
-      'password': password.trim(),
+      'password': password,
     };
     if (role != null && role.trim().isNotEmpty) {
       body['role'] = role.trim();
@@ -412,14 +503,12 @@ class MongoDataApiService {
     final response = await _postJson('/auth/login', body);
 
     if (response.statusCode == 200 && response.data['success'] == true) {
-      _applySession(response.data, emailFallback: email);
+      await _applySession(response.data, emailFallback: email);
       return true;
     }
 
-    if (response.statusCode == 400 || response.statusCode == 401) {
-      return false;
-    }
-
+    // Preserve the centralized API's reason, including inactive or
+    // deactivated-account responses, so the login screen can show it.
     throw Exception(_messageFor(response.data, 'Login failed.'));
   }
 
@@ -437,7 +526,7 @@ class MongoDataApiService {
     });
 
     if (response.statusCode == 200 && response.data['success'] == true) {
-      _applySession(response.data, emailFallback: email);
+      await _applySession(response.data, emailFallback: email);
       return;
     }
 
@@ -447,7 +536,7 @@ class MongoDataApiService {
   Future<void> logout() async {
     final email = _currentEmail;
     final refreshToken = _refreshToken;
-    _clearSession();
+    await _clearSession();
 
     if (email == null || refreshToken == null) {
       return;
@@ -464,26 +553,28 @@ class MongoDataApiService {
   Future<Map<String, dynamic>> uploadReceipt({
     required Uint8List bytes,
     required String fileName,
+    required String requestId,
     required String paymentType,
     required String docName,
     required String purpose,
-    double? amount,
-    String? status,
   }) async {
     await _ensureValidSession();
+    final normalizedRequestId = requestId.trim();
+    if (normalizedRequestId.isEmpty) {
+      throw ArgumentError.value(
+        requestId,
+        'requestId',
+        'A request ID is required to upload a receipt.',
+      );
+    }
 
     Future<_ApiResponse> sendRequest() async {
       final request = http.MultipartRequest('POST', _uri('/payments/receipt'));
       request.headers.addAll(authHeaders());
+      request.fields['requestId'] = normalizedRequestId;
       request.fields['paymentType'] = paymentType;
       request.fields['docName'] = docName;
       request.fields['purpose'] = purpose;
-      if (amount != null) {
-        request.fields['amount'] = amount.toStringAsFixed(2);
-      }
-      if (status != null && status.trim().isNotEmpty) {
-        request.fields['status'] = status.trim();
-      }
 
       final safeName =
           fileName.trim().isEmpty ? 'receipt.jpg' : fileName.trim();
@@ -707,7 +798,11 @@ class MongoDataApiService {
     // happen when the first submission succeeded but its response was lost.
     if (response.statusCode == 409 &&
         response.data['refundStatus']?.toString().trim().isNotEmpty == true) {
-      return response.data;
+      return {
+        ...response.data,
+        // Older API deployments may not return this explicit marker yet.
+        'alreadyRequested': true,
+      };
     }
 
     throw Exception(
@@ -715,14 +810,21 @@ class MongoDataApiService {
     );
   }
 
-  Future<String?> requestPasswordResetOtp({required String email}) async {
+  Future<OtpChallenge> requestPasswordResetOtp({required String email}) async {
     final response = await _postJson('/auth/forgot-password/request-otp', {
       'email': email.trim(),
     });
 
     if (response.statusCode == 200 && response.data['success'] == true) {
+      final challengeToken = response.data['challengeToken'];
+      if (challengeToken is! String || challengeToken.trim().isEmpty) {
+        throw Exception('Missing OTP challenge token.');
+      }
       final otp = response.data['otp'];
-      return otp?.toString();
+      return OtpChallenge(
+        challengeToken: challengeToken,
+        developmentOtp: otp?.toString(),
+      );
     }
 
     throw Exception(
@@ -733,10 +835,20 @@ class MongoDataApiService {
   Future<String> verifyPasswordResetOtp({
     required String email,
     required String otp,
+    required String challengeToken,
   }) async {
+    final normalizedChallengeToken = challengeToken.trim();
+    if (normalizedChallengeToken.isEmpty) {
+      throw ArgumentError.value(
+        challengeToken,
+        'challengeToken',
+        'An OTP challenge token is required.',
+      );
+    }
     final response = await _postJson('/auth/forgot-password/verify-otp', {
       'email': email.trim(),
       'otp': otp.trim(),
+      'challengeToken': normalizedChallengeToken,
     });
 
     if (response.statusCode == 200 && response.data['success'] == true) {

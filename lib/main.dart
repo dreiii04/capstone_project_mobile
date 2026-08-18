@@ -1,5 +1,5 @@
-import 'package:capstone_project/constants.dart';
 import 'package:capstone_project/screens/data_consent_screen.dart';
+import 'package:capstone_project/services/mongo_data_api_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter/services.dart';
@@ -17,7 +17,7 @@ Future<void> main() async {
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]);
-  await loadAppConfig();
+  await MongoDataApiService.instance.initialize();
   runApp(const Verifitor());
 }
 
@@ -45,6 +45,9 @@ class Verifitor extends StatelessWidget {
             '/consent': (context) => const DataConsentScreen(),
             '/profile': (context) => const ProfileScreen(),
             '/pending': (context) => const PendingScreen(
+                  requestList: [],
+                ),
+            '/tracking': (context) => const PendingScreen(
                   requestList: [],
                 ),
             '/forgot': (context) => const PasswordScreen(),

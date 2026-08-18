@@ -14,6 +14,14 @@ import {
   transactions,
 } from './db.js';
 
+const missingRefundIdFilter = {
+  $or: [
+    { refundId: { $exists: false } },
+    { refundId: null },
+    { refundId: '' },
+  ],
+};
+
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -42,6 +50,24 @@ async function normalizeEmailsInCollection(collection, label) {
   }
 }
 
+async function backfillRefundIds() {
+  const cursor = refunds.find(missingRefundIdFilter, {
+    projection: { _id: 1 },
+  });
+  for await (const refund of cursor) {
+    // MongoDB always supplies _id, so it is a stable unique value for legacy
+    // refund documents that predate the public refundId field.
+    const refundId = String(refund._id).trim();
+    if (!refundId) {
+      throw new Error('A legacy refund record is missing its MongoDB ID.');
+    }
+    await refunds.updateOne(
+      { _id: refund._id, ...missingRefundIdFilter },
+      { $set: { refundId } },
+    );
+  }
+}
+
 async function createIndexes() {
   for (const collection of [alumniUsers, studentUsers]) {
     await collection.createIndex({ email: 1 }, { unique: true });
@@ -65,6 +91,11 @@ async function createIndexes() {
   );
   await transactions.createIndex({ userId: 1, createdAt: -1 });
   await transactions.createIndex({ email: 1, createdAt: -1 });
+  await backfillRefundIds();
+  await refunds.createIndex(
+    { refundId: 1 },
+    { unique: true },
+  );
   await refunds.createIndex(
     { transactionId: 1, userId: 1 },
     { unique: true },
