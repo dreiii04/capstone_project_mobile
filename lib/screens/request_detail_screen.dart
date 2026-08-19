@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../widgets/custom_font.dart';
 import '../screens/payment_details_screen.dart';
 import '../screens/pending_screen.dart';
+import '../models/request_status.dart';
 
 class RequestDetailsScreen extends StatelessWidget {
   final PendingRequest request;
@@ -16,7 +17,8 @@ class RequestDetailsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final request = this.request;
     final statusUpper = request.status.toUpperCase();
-    final needsPayment = statusUpper == 'PENDING FOR PAYMENT';
+    final needsPayment = requestNeedsPayment(request.status);
+    final canPay = needsPayment && request.totalAmount > 0;
     final pendingCompletion = statusUpper == 'PENDING TO COMPLETE';
     final statusNote = needsPayment
         ? "Payment is required to continue processing your request. Please complete your payment to proceed."
@@ -85,11 +87,16 @@ class RequestDetailsScreen extends StatelessWidget {
               const Divider(),
               _buildInfoRow(
                 "Total Amount Due:",
-                _amountLabel(request.documentPrice),
+                _amountLabel(request.totalAmount),
                 isBold: true,
               ),
               SizedBox(height: 15.h),
-              if (needsPayment)
+              if (needsPayment && !canPay)
+                const Text(
+                  'The Registrar must set the payment amount before you can pay.',
+                  style: TextStyle(color: Colors.redAccent),
+                ),
+              if (canPay)
                 Align(
                   alignment: Alignment.centerRight,
                   child: ElevatedButton(

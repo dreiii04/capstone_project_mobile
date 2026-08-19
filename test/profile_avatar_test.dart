@@ -6,11 +6,11 @@ void main() {
   test('profile image URLs resolve against the centralized API host', () {
     expect(
       resolveProfileImageUrl('/uploads/profiles/photo.png'),
-      'https://verifitor-backend.vercel.app/uploads/profiles/photo.png',
+      'https://cp-three-lemon.vercel.app/uploads/profiles/photo.png',
     );
     expect(
       resolveProfileImageUrl('uploads/profiles/photo.png'),
-      'https://verifitor-backend.vercel.app/uploads/profiles/photo.png',
+      'https://cp-three-lemon.vercel.app/uploads/profiles/photo.png',
     );
     expect(
       resolveProfileImageUrl('https://res.cloudinary.com/demo/photo.png'),

@@ -105,7 +105,7 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
         dateCreated: widget.request.dateCreated,
         status: 'PENDING TO COMPLETE',
         documentPrice: widget.request.documentPrice,
-        totalAmount: widget.request.documentPrice,
+        totalAmount: widget.request.totalAmount,
       );
       Navigator.push(
         context,
@@ -154,7 +154,7 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
               const Divider(),
               _infoRow(
                 "Total Amount Due",
-                _amountLabel(widget.request.documentPrice),
+                _amountLabel(widget.request.totalAmount),
                 isBold: true,
               ),
             ]),
@@ -371,21 +371,11 @@ class SuccessfulScreen extends StatelessWidget {
               SizedBox(height: 50.h),
               ElevatedButton(
                 onPressed: () {
-                  // Need to improve logic for updating the request status in the actual app, but for now we will just navigate back to home with the new request added to pending list
                   Navigator.pushAndRemoveUntil(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => HomeScreen(
-                        initialIndex: 1, // Go to the Tracking tab.
-                        newRequest: PendingRequest(
-                          requestId: request.requestId,
-                          docName: request.docName,
-                          purpose: request.purpose,
-                          dateCreated: request.dateCreated,
-                          status: "Processing", // Updated status
-                          documentPrice: request.documentPrice,
-                          totalAmount: request.totalAmount,
-                        ),
+                      builder: (context) => const HomeScreen(
+                        initialIndex: 1,
                       ),
                     ),
                     (route) => false,

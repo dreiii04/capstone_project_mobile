@@ -25,7 +25,11 @@ class _PaymentDetailsScreenState extends State<PaymentDetailsScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF5D7E97),
         centerTitle: true,
-        title: CustomFont(text: "Payment Details", fontSize: 22.sp, color: Colors.white, fontWeight: FontWeight.bold),
+        title: CustomFont(
+            text: "Payment Details",
+            fontSize: 22.sp,
+            color: Colors.white,
+            fontWeight: FontWeight.bold),
       ),
       body: SingleChildScrollView(
         padding: EdgeInsets.all(20.w),
@@ -40,7 +44,7 @@ class _PaymentDetailsScreenState extends State<PaymentDetailsScreen> {
               const Divider(),
               _infoRow(
                 "Total Amount Due",
-                _amountLabel(widget.request.documentPrice),
+                _amountLabel(widget.request.totalAmount),
                 isBold: true,
               ),
             ]),
@@ -58,7 +62,7 @@ class _PaymentDetailsScreenState extends State<PaymentDetailsScreen> {
               Center(
                 child: CustomFont(
                   text:
-                      "Scan to pay ${_amountLabel(widget.request.documentPrice)}",
+                      "Scan to pay ${_amountLabel(widget.request.totalAmount)}",
                   fontSize: 12.sp,
                   color: Colors.black54,
                 ),
@@ -74,8 +78,10 @@ class _PaymentDetailsScreenState extends State<PaymentDetailsScreen> {
                 ),
                 Expanded(
                   child: CustomFont(
-                    text: "I confirm that the billing details are correct and I agree to proceed to the payment page.",
-                    fontSize: 11.sp, color: Colors.black54,
+                    text:
+                        "I confirm that the billing details are correct and I agree to proceed to the payment page.",
+                    fontSize: 11.sp,
+                    color: Colors.black54,
                   ),
                 ),
               ],
@@ -84,15 +90,25 @@ class _PaymentDetailsScreenState extends State<PaymentDetailsScreen> {
             Align(
               alignment: Alignment.bottomRight,
               child: ElevatedButton(
-                onPressed: _isConfirmed 
-                  ? () => Navigator.push(context, MaterialPageRoute(builder: (context) => PaymentMethodScreen(request: widget.request)))
-                  : null,
+                onPressed: _isConfirmed
+                    ? () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (context) =>
+                                PaymentMethodScreen(request: widget.request)))
+                    : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF233446),
-                  padding: EdgeInsets.symmetric(horizontal: 45.w, vertical: 12.h),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8.r)),
+                  padding:
+                      EdgeInsets.symmetric(horizontal: 45.w, vertical: 12.h),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8.r)),
                 ),
-                child: CustomFont(text: "Next", color: Colors.white, fontSize: 16.sp, fontWeight: FontWeight.bold),
+                child: CustomFont(
+                    text: "Next",
+                    color: Colors.white,
+                    fontSize: 16.sp,
+                    fontWeight: FontWeight.bold),
               ),
             ),
           ],
@@ -120,7 +136,11 @@ class _PaymentDetailsScreenState extends State<PaymentDetailsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          CustomFont(text: title, fontSize: 16.sp, fontWeight: FontWeight.bold, color: const Color(0xFF233446)),
+          CustomFont(
+              text: title,
+              fontSize: 16.sp,
+              fontWeight: FontWeight.bold,
+              color: const Color(0xFF233446)),
           SizedBox(height: 12.h),
           ...children,
         ],
@@ -135,7 +155,11 @@ class _PaymentDetailsScreenState extends State<PaymentDetailsScreen> {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           CustomFont(text: label, fontSize: 13.sp, color: Colors.black54),
-          CustomFont(text: value, fontSize: 13.sp, fontWeight: isBold ? FontWeight.bold : FontWeight.w500, color: isBold ? const Color(0xFF233446) : Colors.black87),
+          CustomFont(
+              text: value,
+              fontSize: 13.sp,
+              fontWeight: isBold ? FontWeight.bold : FontWeight.w500,
+              color: isBold ? const Color(0xFF233446) : Colors.black87),
         ],
       ),
     );

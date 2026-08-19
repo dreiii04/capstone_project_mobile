@@ -101,6 +101,22 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('two-letter names are valid and invalid names show locally',
+      (tester) async {
+    await _pumpEditProfile(tester, const Size(412, 900));
+    final firstName = find.widgetWithText(TextFormField, 'First name');
+    final lastName = find.widgetWithText(TextFormField, 'Last name');
+
+    await tester.enterText(firstName, 'An');
+    await tester.enterText(lastName, 'Li');
+    expect(tester.state<FormState>(find.byType(Form)).validate(), isTrue);
+
+    await tester.enterText(firstName, '1');
+    expect(tester.state<FormState>(find.byType(Form)).validate(), isFalse);
+    await tester.pump();
+    expect(find.textContaining('Use 2 to 50'), findsOneWidget);
+  });
+
   testWidgets('personal information fields follow the account type',
       (tester) async {
     const cases = [

@@ -6,6 +6,8 @@ import 'dart:typed_data';
 import 'package:capstone_project/constants.dart';
 import 'package:capstone_project/models/profile_data.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
+import 'api_contract_adapter.dart';
 import 'token_storage.dart';
 
 class OtpChallenge {
@@ -38,6 +40,7 @@ class MongoDataApiService {
   String? _accessToken;
   String? _refreshToken;
   String? _currentEmail;
+  String? _currentUserId;
   DateTime? _accessTokenExpiresAt;
   final TokenStorage _storage = TokenStorage();
   Future<void>? _initialization;
@@ -46,6 +49,7 @@ class MongoDataApiService {
 
   bool get hasSession => _accessToken != null && _refreshToken != null;
   String? get accessToken => _accessToken;
+  String? get currentUserId => _currentUserId;
   DateTime? get accessTokenExpiresAt => _accessTokenExpiresAt;
 
   Map<String, String> authHeaders() {
@@ -67,6 +71,7 @@ class MongoDataApiService {
     final refreshToken = await _storage.readRefreshToken();
     final expiryMillis = await _storage.readExpiryMillis();
     final email = await _storage.readEmail();
+    final storedUserId = await _storage.readUserId();
 
     final hasCompleteSession = accessToken?.trim().isNotEmpty == true &&
         refreshToken?.trim().isNotEmpty == true &&
@@ -74,7 +79,8 @@ class MongoDataApiService {
     final hasAnySessionValue = accessToken != null ||
         refreshToken != null ||
         expiryMillis != null ||
-        email != null;
+        email != null ||
+        storedUserId != null;
 
     if (!hasCompleteSession) {
       if (hasAnySessionValue) await _storage.clear();
@@ -84,6 +90,9 @@ class MongoDataApiService {
     _accessToken = accessToken!.trim();
     _refreshToken = refreshToken!.trim();
     _currentEmail = email!.trim();
+    _currentUserId = storedUserId?.trim().isNotEmpty == true
+        ? storedUserId!.trim()
+        : _subjectFromAccessToken(_accessToken!);
     if (expiryMillis != null) {
       _accessTokenExpiresAt = DateTime.fromMillisecondsSinceEpoch(expiryMillis);
     }
@@ -183,6 +192,31 @@ class MongoDataApiService {
     return _decodeResponse(response);
   }
 
+  Future<_ApiResponse> _deleteJson(
+    String path, {
+    bool withAuth = false,
+    bool retrying = false,
+  }) async {
+    final headers = <String, String>{};
+    if (withAuth) {
+      await _ensureValidSession();
+      headers.addAll(authHeaders());
+    }
+
+    late final http.Response response;
+    try {
+      response =
+          await http.delete(_uri(path), headers: headers).timeout(_timeout);
+    } catch (error) {
+      throw Exception(_friendlyNetworkMessage(error));
+    }
+    if (withAuth && response.statusCode == 401 && !retrying) {
+      await _refreshOrThrow();
+      return _deleteJson(path, withAuth: true, retrying: true);
+    }
+    return _decodeResponse(response);
+  }
+
   Future<_ApiResponse> _sendMultipart(http.MultipartRequest request) async {
     late final http.StreamedResponse streamed;
     try {
@@ -204,6 +238,9 @@ class MongoDataApiService {
       if (decoded is Map<String, dynamic>) {
         return _ApiResponse(response.statusCode, decoded);
       }
+      if (decoded is List) {
+        return _ApiResponse(response.statusCode, {'items': decoded});
+      }
     } catch (_) {}
 
     return _ApiResponse(response.statusCode, const {});
@@ -212,6 +249,15 @@ class MongoDataApiService {
   String _messageFor(Map<String, dynamic> data, String fallback) {
     final message = data['message'];
     if (message is String && message.trim().isNotEmpty) {
+      if (message.trim().toLowerCase() == 'input validation failed') {
+        final errors = data['errors'];
+        if (errors is List && errors.isNotEmpty && errors.first is Map) {
+          final detail = (errors.first as Map)['msg'];
+          if (detail is String && detail.trim().isNotEmpty) {
+            return detail.trim();
+          }
+        }
+      }
       return message;
     }
     return fallback;
@@ -231,6 +277,7 @@ class MongoDataApiService {
     _accessToken = null;
     _refreshToken = null;
     _currentEmail = null;
+    _currentUserId = null;
     _accessTokenExpiresAt = null;
   }
 
@@ -251,11 +298,16 @@ class MongoDataApiService {
     }
 
     String? currentEmail;
+    String? currentUserId;
     final user = data['user'];
     if (user is Map) {
       final email = user['email'];
       if (email is String && email.trim().isNotEmpty) {
         currentEmail = email.trim();
+      }
+      final id = user['id'] ?? user['_id'];
+      if (id != null && id.toString().trim().isNotEmpty) {
+        currentUserId = id.toString().trim();
       }
     }
 
@@ -265,6 +317,10 @@ class MongoDataApiService {
     }
     if (currentEmail == null || currentEmail.isEmpty) {
       throw Exception('Missing session email.');
+    }
+    currentUserId ??= _subjectFromAccessToken(accessToken);
+    if (currentUserId == null || currentUserId.isEmpty) {
+      throw Exception('Missing authenticated user ID.');
     }
 
     DateTime? expiresAt;
@@ -279,6 +335,7 @@ class MongoDataApiService {
         refreshToken: refreshToken,
         expiryMillis: expiresAt?.millisecondsSinceEpoch,
         email: currentEmail,
+        userId: currentUserId,
       );
     } catch (_) {
       _discardSessionInMemory();
@@ -293,7 +350,24 @@ class MongoDataApiService {
     _accessToken = accessToken;
     _refreshToken = refreshToken;
     _currentEmail = currentEmail;
+    _currentUserId = currentUserId;
     _accessTokenExpiresAt = expiresAt;
+  }
+
+  String? _subjectFromAccessToken(String token) {
+    final parts = token.split('.');
+    if (parts.length != 3) return null;
+    try {
+      final payload = jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))),
+      );
+      if (payload is! Map) return null;
+      final subject = payload['sub'] ?? payload['id'];
+      final value = subject?.toString().trim() ?? '';
+      return value.isEmpty ? null : value;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _refreshOrThrow() async {
@@ -370,6 +444,12 @@ class MongoDataApiService {
       );
     }
 
+    if (response.statusCode == 404) {
+      throw Exception(
+        'Account registration is not available on the current server version. The backend must be updated before creating an account.',
+      );
+    }
+
     throw Exception(_messageFor(response.data, 'Failed to request OTP.'));
   }
 
@@ -406,16 +486,17 @@ class MongoDataApiService {
     }
 
     final response = await _getJson('/profile', withAuth: true);
-    if (response.statusCode == 200 && response.data['success'] == true) {
-      final user = response.data['user'];
-      if (user is Map<String, dynamic>) {
-        final email = user['email'];
-        if (email is String && email.trim().isNotEmpty) {
-          _currentEmail = email.trim();
-        }
-        return ProfileData.fromJson(user);
+    if (response.statusCode == 200) {
+      final user = apiObject(response.data, key: 'user');
+      if (user == null) throw Exception('Invalid profile response.');
+      final normalized = normalizeProfileRecord(user);
+      final email = normalized['email'];
+      if (email is String && email.trim().isNotEmpty) {
+        _currentEmail = email.trim();
       }
-      throw Exception('Invalid profile response.');
+      final profile = ProfileData.fromJson(normalized);
+      _acceptAuthenticatedProfile(profile);
+      return profile;
     }
 
     throw Exception(_messageFor(response.data, 'Failed to load profile.'));
@@ -433,16 +514,17 @@ class MongoDataApiService {
       profile.toJson(),
       withAuth: true,
     );
-    if (response.statusCode == 200 && response.data['success'] == true) {
-      final user = response.data['user'];
-      if (user is Map<String, dynamic>) {
-        final email = user['email'];
-        if (email is String && email.trim().isNotEmpty) {
-          _currentEmail = email.trim();
-        }
-        return ProfileData.fromJson(user);
+    if (response.statusCode == 200) {
+      final user = apiObject(response.data, key: 'user');
+      if (user == null) throw Exception('Invalid profile response.');
+      final normalized = normalizeProfileRecord(user);
+      final email = normalized['email'];
+      if (email is String && email.trim().isNotEmpty) {
+        _currentEmail = email.trim();
       }
-      throw Exception('Invalid profile response.');
+      final updated = ProfileData.fromJson(normalized);
+      _acceptAuthenticatedProfile(updated);
+      return updated;
     }
 
     throw Exception(_messageFor(response.data, 'Failed to update profile.'));
@@ -471,20 +553,36 @@ class MongoDataApiService {
       },
       withAuth: true,
     );
-    if (response.statusCode == 200 && response.data['success'] == true) {
-      try {
-        await _applySession(
-          response.data,
-          emailFallback: _currentEmail,
-        );
-      } catch (_) {
-        await _clearSession();
-        rethrow;
+    if (response.statusCode == 200) {
+      if (response.data['accessToken'] != null &&
+          response.data['refreshToken'] != null) {
+        try {
+          await _applySession(
+            response.data,
+            emailFallback: _currentEmail,
+          );
+        } catch (_) {
+          await _clearSession();
+          rethrow;
+        }
       }
       return;
     }
 
     throw Exception(_messageFor(response.data, 'Failed to change password.'));
+  }
+
+  void _acceptAuthenticatedProfile(ProfileData profile) {
+    final profileId = profile.id.trim();
+    final sessionId = _currentUserId?.trim() ?? '';
+    if (profileId.isEmpty) {
+      throw Exception('Profile response is missing the authenticated user ID.');
+    }
+    if (sessionId.isNotEmpty && profileId != sessionId) {
+      throw Exception(
+          'Profile response does not match the authenticated account.');
+    }
+    _currentUserId = profileId;
   }
 
   Future<bool> login({
@@ -567,14 +665,24 @@ class MongoDataApiService {
         'A request ID is required to upload a receipt.',
       );
     }
+    final receiptContentType = receiptImageContentType(bytes);
+    if (receiptContentType == null) {
+      throw ArgumentError.value(
+        fileName,
+        'fileName',
+        'Please choose a valid JPG or PNG receipt image.',
+      );
+    }
 
     Future<_ApiResponse> sendRequest() async {
       final request = http.MultipartRequest('POST', _uri('/payments/receipt'));
       request.headers.addAll(authHeaders());
       request.fields['requestId'] = normalizedRequestId;
-      request.fields['paymentType'] = paymentType;
-      request.fields['docName'] = docName;
-      request.fields['purpose'] = purpose;
+      final requestedPaymentType = paymentType.trim().toLowerCase();
+      request.fields['paymentType'] =
+          const {'onsite', 'gcash', 'receipt'}.contains(requestedPaymentType)
+              ? requestedPaymentType
+              : 'receipt';
 
       final safeName =
           fileName.trim().isEmpty ? 'receipt.jpg' : fileName.trim();
@@ -583,6 +691,7 @@ class MongoDataApiService {
           'receipt',
           bytes,
           filename: safeName,
+          contentType: receiptContentType,
         ),
       );
 
@@ -596,7 +705,7 @@ class MongoDataApiService {
     }
 
     if (decoded.statusCode == 201 && decoded.data['success'] == true) {
-      return decoded.data;
+      return Map<String, dynamic>.from(decoded.data);
     }
 
     throw Exception(_messageFor(decoded.data, 'Failed to upload receipt.'));
@@ -607,6 +716,14 @@ class MongoDataApiService {
     required String fileName,
   }) async {
     await _ensureValidSession();
+    final imageContentType = receiptImageContentType(bytes);
+    if (imageContentType == null) {
+      throw ArgumentError.value(
+        fileName,
+        'fileName',
+        'Please choose a valid JPG or PNG profile image.',
+      );
+    }
 
     Future<_ApiResponse> sendRequest() async {
       final request = http.MultipartRequest('POST', _uri('/profile/photo'));
@@ -619,6 +736,7 @@ class MongoDataApiService {
           'photo',
           bytes,
           filename: safeName,
+          contentType: imageContentType,
         ),
       );
 
@@ -631,16 +749,13 @@ class MongoDataApiService {
       decoded = await sendRequest();
     }
 
-    if (decoded.statusCode == 201 && decoded.data['success'] == true) {
-      final user = decoded.data['profile'];
-      if (user is Map<String, dynamic>) {
-        final email = user['email'];
-        if (email is String && email.trim().isNotEmpty) {
-          _currentEmail = email.trim();
-        }
-        return ProfileData.fromJson(user);
-      }
-      throw Exception('Invalid profile response.');
+    if ((decoded.statusCode == 200 || decoded.statusCode == 201) &&
+        decoded.data['success'] == true) {
+      final rawProfile = apiObject(decoded.data, key: 'profile');
+      if (rawProfile == null) throw Exception('Invalid upload response.');
+      final profile = ProfileData.fromJson(normalizeProfileRecord(rawProfile));
+      _acceptAuthenticatedProfile(profile);
+      return profile;
     }
 
     throw Exception(_messageFor(decoded.data, 'Failed to upload photo.'));
@@ -658,13 +773,38 @@ class MongoDataApiService {
       '/requests',
       {
         'docName': docName.trim(),
+        'documentType': docName.trim(),
         'purpose': purpose.trim(),
       },
       withAuth: true,
     );
 
-    if (response.statusCode == 201 && response.data['success'] == true) {
-      return response.data;
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      if (response.data['persisted'] == false) {
+        throw Exception(
+          'The backend is using temporary storage. Configure MongoDB before submitting requests.',
+        );
+      }
+      final request = apiObject(response.data, key: 'request');
+      if (request == null) throw Exception('Invalid request response.');
+      final normalized = normalizeRequestRecord(request);
+      final requestId = [
+        normalized['requestId'],
+        normalized['id'],
+        normalized['_id'],
+      ]
+          .map((value) => value?.toString().trim() ?? '')
+          .firstWhere((value) => value.isNotEmpty, orElse: () => '');
+      if (requestId.isEmpty) {
+        throw Exception(
+          'The server did not return a database ID for this request.',
+        );
+      }
+      return {
+        'success': true,
+        'persisted': response.data['persisted'] != false,
+        'request': normalized,
+      };
     }
 
     throw Exception(_messageFor(response.data, 'Failed to submit request.'));
@@ -687,15 +827,16 @@ class MongoDataApiService {
         : '/requests?status=${Uri.encodeQueryComponent(filtered.join(','))}';
 
     final response = await _getJson(path, withAuth: true);
-    if (response.statusCode == 200 && response.data['success'] == true) {
-      final raw = response.data['requests'];
-      if (raw is List) {
-        return raw
-            .whereType<Map>()
-            .map((item) => Map<String, dynamic>.from(item))
-            .toList();
-      }
-      return [];
+    if (response.statusCode == 200) {
+      final records = apiList(response.data, key: 'requests')
+          .map(normalizeRequestRecord)
+          .toList();
+      if (filtered.isEmpty) return records;
+      final accepted = filtered.map((value) => value.toLowerCase()).toSet();
+      return records.where((item) {
+        final status = item['status']?.toString().trim().toLowerCase() ?? '';
+        return accepted.contains(status);
+      }).toList();
     }
 
     throw Exception(_messageFor(response.data, 'Failed to load requests.'));
@@ -730,19 +871,69 @@ class MongoDataApiService {
       '/notifications?limit=$safeLimit',
       withAuth: true,
     );
-    if (response.statusCode == 200 && response.data['success'] == true) {
-      final raw = response.data['notifications'];
-      if (raw is List) {
-        return raw
-            .whereType<Map>()
-            .map((item) => Map<String, dynamic>.from(item))
-            .toList();
-      }
-      return [];
+    if (response.statusCode == 200) {
+      return apiList(response.data, key: 'notifications')
+          .map(normalizeNotificationRecord)
+          .take(safeLimit)
+          .toList();
     }
 
     throw Exception(
         _messageFor(response.data, 'Failed to load notifications.'));
+  }
+
+  Future<void> markNotificationRead(String notificationId) async {
+    final id = notificationId.trim();
+    if (id.isEmpty) {
+      throw ArgumentError.value(
+        notificationId,
+        'notificationId',
+        'A notification ID is required.',
+      );
+    }
+    final response = await _putJson(
+      '/notifications/${Uri.encodeComponent(id)}/read',
+      const {},
+      withAuth: true,
+    );
+    if (response.statusCode != 200) {
+      throw Exception(
+        _messageFor(response.data, 'Failed to mark notification as read.'),
+      );
+    }
+  }
+
+  Future<void> markAllNotificationsRead() async {
+    final response = await _putJson(
+      '/notifications/mark-all-read',
+      const {},
+      withAuth: true,
+    );
+    if (response.statusCode != 200) {
+      throw Exception(
+        _messageFor(response.data, 'Failed to mark notifications as read.'),
+      );
+    }
+  }
+
+  Future<void> dismissNotification(String notificationId) async {
+    final id = notificationId.trim();
+    if (id.isEmpty) {
+      throw ArgumentError.value(
+        notificationId,
+        'notificationId',
+        'A notification ID is required.',
+      );
+    }
+    final response = await _deleteJson(
+      '/notifications/${Uri.encodeComponent(id)}',
+      withAuth: true,
+    );
+    if (response.statusCode != 200) {
+      throw Exception(
+        _messageFor(response.data, 'Failed to dismiss notification.'),
+      );
+    }
   }
 
   Future<List<Map<String, dynamic>>> fetchTransactions({int limit = 50}) async {
@@ -755,15 +946,11 @@ class MongoDataApiService {
       '/transactions?limit=$safeLimit',
       withAuth: true,
     );
-    if (response.statusCode == 200 && response.data['success'] == true) {
-      final raw = response.data['transactions'];
-      if (raw is List) {
-        return raw
-            .whereType<Map>()
-            .map((item) => Map<String, dynamic>.from(item))
-            .toList();
-      }
-      return [];
+    if (response.statusCode == 200) {
+      return apiList(response.data, key: 'transactions')
+          .map(normalizeTransactionRecord)
+          .take(safeLimit)
+          .toList();
     }
 
     throw Exception(_messageFor(response.data, 'Failed to load transactions.'));
@@ -784,14 +971,19 @@ class MongoDataApiService {
         'refundMethod': refundMethod.trim(),
         'accountName': accountName.trim(),
         'accountNumber': accountNumber.trim(),
-        if (bankName != null) 'bankName': bankName.trim(),
-        if (reason != null) 'reason': reason.trim(),
+        if (bankName?.trim().isNotEmpty == true) 'bankName': bankName!.trim(),
+        if (reason?.trim().isNotEmpty == true) 'reason': reason!.trim(),
       },
       withAuth: true,
     );
 
     if (response.statusCode == 201 && response.data['success'] == true) {
-      return response.data;
+      final refund = apiObject(response.data, key: 'refund');
+      return {
+        ...response.data,
+        'refundStatus':
+            refund?['status']?.toString().toLowerCase() ?? 'pending',
+      };
     }
 
     // Treat an already-recorded refund as an idempotent success. This can
@@ -816,11 +1008,8 @@ class MongoDataApiService {
     });
 
     if (response.statusCode == 200 && response.data['success'] == true) {
-      final challengeToken = response.data['challengeToken'];
-      if (challengeToken is! String || challengeToken.trim().isEmpty) {
-        throw Exception('Missing OTP challenge token.');
-      }
       final otp = response.data['otp'];
+      final challengeToken = response.data['challengeToken']?.toString() ?? '';
       return OtpChallenge(
         challengeToken: challengeToken,
         developmentOtp: otp?.toString(),
@@ -877,6 +1066,27 @@ class MongoDataApiService {
 
     throw Exception(_messageFor(response.data, 'Password reset failed.'));
   }
+}
+
+MediaType? receiptImageContentType(Uint8List bytes) {
+  if (bytes.length >= 8 &&
+      bytes[0] == 0x89 &&
+      bytes[1] == 0x50 &&
+      bytes[2] == 0x4e &&
+      bytes[3] == 0x47 &&
+      bytes[4] == 0x0d &&
+      bytes[5] == 0x0a &&
+      bytes[6] == 0x1a &&
+      bytes[7] == 0x0a) {
+    return MediaType('image', 'png');
+  }
+  if (bytes.length >= 3 &&
+      bytes[0] == 0xff &&
+      bytes[1] == 0xd8 &&
+      bytes[2] == 0xff) {
+    return MediaType('image', 'jpeg');
+  }
+  return null;
 }
 
 class _ApiResponse {

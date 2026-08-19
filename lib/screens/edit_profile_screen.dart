@@ -114,7 +114,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   String? _requiredName(String? value) {
-    if (value == null || value.trim().isEmpty) return 'This field is required';
+    final name = value?.trim() ?? '';
+    if (name.isEmpty) return 'This field is required';
+    if (name.length < 2 || name.length > 50) {
+      return 'Use 2 to 50 characters';
+    }
+    final validName = RegExp(r"^[A-Za-zÀ-ÖØ-öø-ÿĀ-žÑñ .’'\-]+$");
+    if (!validName.hasMatch(name)) {
+      return 'Use letters, spaces, apostrophes, or hyphens only';
+    }
     return null;
   }
 
@@ -133,6 +141,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     setState(() => _isSaving = true);
 
     final updated = ProfileData(
+      id: widget.profile.id,
       firstName: _firstNameController.text.trim(),
       lastName: _lastNameController.text.trim(),
       studentId: widget.profile.isCurrentStudent
@@ -145,6 +154,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       personalEmail:
           widget.profile.usesSchoolLogin ? '' : widget.profile.personalEmail,
       role: widget.profile.role,
+      profileImageUrl: widget.profile.profileImageUrl,
     );
 
     try {

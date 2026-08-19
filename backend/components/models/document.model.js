@@ -47,3 +47,26 @@ export function getDocumentPrice(docName) {
   if (key.includes('ctc')) return 200;
   return defaultDocumentPrice;
 }
+
+function toNonNegativeNumber(value, fallback) {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+export function resolveDocumentPricing(record = {}) {
+  const catalogPrice = getDocumentPrice(record.docName || record.documentType);
+  const storedPrice = toNonNegativeNumber(record.documentPrice, catalogPrice);
+  const documentPrice = storedPrice === 0 && catalogPrice > 0
+    ? catalogPrice
+    : storedPrice;
+  const processingFee = toNonNegativeNumber(
+    record.processingFee,
+    defaultProcessingFee,
+  );
+  const fallbackTotal = documentPrice + processingFee;
+  const storedTotal = toNonNegativeNumber(record.totalAmount, fallbackTotal);
+  const totalAmount = storedTotal === 0 && fallbackTotal > 0
+    ? fallbackTotal
+    : storedTotal;
+  return { documentPrice, processingFee, totalAmount };
+}

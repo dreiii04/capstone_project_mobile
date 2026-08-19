@@ -114,7 +114,9 @@ async function createIndexes() {
 
 export async function initializeDatabase() {
   if (!dbEnabled) {
-    console.warn('DISABLE_DB is true. Using in-memory users only.');
+    console.warn(
+      'DISABLE_DB is true. Using temporary in-memory storage; data will not persist.',
+    );
     return;
   }
   if (!client) {
@@ -124,6 +126,7 @@ export async function initializeDatabase() {
 
   try {
     await connectDatabase();
+    console.log(`MongoDB connected successfully (${config.database.name}).`);
     if (!config.runDbMigrations) return;
     try {
       await createIndexes();

@@ -7,6 +7,7 @@ class TokenStorage {
   static const _keyRefresh = 'refreshToken';
   static const _keyExpiry = 'accessExpiryMillis';
   static const _keyEmail = 'currentEmail';
+  static const _keyUserId = 'currentUserId';
 
   Future<void> writeAccessToken(String token) async {
     await _secure.write(key: _keyAccess, value: token);
@@ -24,11 +25,16 @@ class TokenStorage {
     await _secure.write(key: _keyEmail, value: email);
   }
 
+  Future<void> writeUserId(String userId) async {
+    await _secure.write(key: _keyUserId, value: userId);
+  }
+
   Future<void> writeSession({
     required String accessToken,
     required String refreshToken,
     required int? expiryMillis,
     required String email,
+    required String userId,
   }) async {
     await writeAccessToken(accessToken);
     await writeRefreshToken(refreshToken);
@@ -38,6 +44,7 @@ class TokenStorage {
       await writeExpiryMillis(expiryMillis);
     }
     await writeEmail(email);
+    await writeUserId(userId);
   }
 
   Future<String?> readAccessToken() => _secure.read(key: _keyAccess);
@@ -49,11 +56,13 @@ class TokenStorage {
   }
 
   Future<String?> readEmail() => _secure.read(key: _keyEmail);
+  Future<String?> readUserId() => _secure.read(key: _keyUserId);
 
   Future<void> clear() async {
     await _secure.delete(key: _keyAccess);
     await _secure.delete(key: _keyRefresh);
     await _secure.delete(key: _keyExpiry);
     await _secure.delete(key: _keyEmail);
+    await _secure.delete(key: _keyUserId);
   }
 }

@@ -84,4 +84,18 @@ void main() {
     expect(alumniJson['schoolEmail'], isEmpty);
     expect(alumniJson['personalEmail'], 'requester@example.com');
   });
+
+  test('profile keeps the permanent database ID out of editable payloads', () {
+    final profile = ProfileData.fromJson(const {
+      '_id': '507f1f77bcf86cd799439011',
+      'firstName': 'Renamed',
+      'lastName': 'Account',
+      'email': 'requester@example.com',
+      'role': 'alumni',
+    });
+
+    expect(profile.id, '507f1f77bcf86cd799439011');
+    expect(profile.toJson().containsKey('id'), isFalse);
+    expect(profile.toJson().containsKey('_id'), isFalse);
+  });
 }

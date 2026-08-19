@@ -6,6 +6,9 @@ import 'package:capstone_project/screens/profile_screen.dart';
 import 'package:capstone_project/screens/history_screen.dart';
 import 'package:capstone_project/screens/notification_screen.dart';
 import 'package:capstone_project/models/profile_data.dart';
+import 'package:capstone_project/models/api_date_time.dart';
+import 'package:capstone_project/models/request_status.dart';
+import 'package:capstone_project/models/request_transaction_matcher.dart';
 import 'package:capstone_project/widgets/profile_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
@@ -16,13 +19,11 @@ import '../services/mongo_data_api_service.dart';
 
 class HomeScreen extends StatefulWidget {
   final int initialIndex;
-  final PendingRequest? newRequest;
   final ProfileData? initialProfile;
 
   const HomeScreen({
     super.key,
     this.initialIndex = 0,
-    this.newRequest,
     this.initialProfile,
   });
 
@@ -89,34 +90,18 @@ class _HomeScreenState extends State<HomeScreen> {
         normalized == 'completed';
   }
 
-  String _displayStatus(String status) {
-    final normalized = status.trim().toLowerCase();
-    if (normalized.isEmpty) return 'PENDING FOR PAYMENT';
-    if (normalized == 'pending_payment' ||
-        normalized == 'pending for payment') {
-      return 'PENDING FOR PAYMENT';
-    }
-    if (normalized == 'pending' ||
-        normalized == 'pending_completion' ||
-        normalized == 'pending to complete') {
-      return 'PENDING TO COMPLETE';
-    }
-    if (normalized == 'complete') return 'COMPLETED';
-    if (normalized == 'declined' || normalized == 'denied') {
-      return 'REJECTED';
-    }
-    if (normalized == 'canceled') return 'CANCELLED';
-    return normalized.toUpperCase();
+  String _displayStatus(
+    String status, {
+    bool hasSubmittedPayment = false,
+  }) {
+    return displayRequestStatus(
+      status,
+      hasSubmittedPayment: hasSubmittedPayment,
+    );
   }
 
   DateTime _parseRequestDate(dynamic value) {
-    if (value is String) {
-      final parsed = DateTime.tryParse(value);
-      if (parsed != null) return parsed;
-    } else if (value is int) {
-      return DateTime.fromMillisecondsSinceEpoch(value);
-    }
-    return DateTime.now();
+    return parseApiDateTime(value);
   }
 
   double _parseAmount(dynamic value) {
@@ -129,13 +114,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   DateTime _parseNotificationDate(dynamic value) {
-    if (value is String) {
-      final parsed = DateTime.tryParse(value);
-      if (parsed != null) return parsed;
-    } else if (value is int) {
-      return DateTime.fromMillisecondsSinceEpoch(value);
-    }
-    return DateTime.now();
+    return parseApiDateTime(value);
   }
 
   String _formatNotificationTimestamp(DateTime value) {
@@ -218,23 +197,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _mergeNewRequest(List<PendingRequest> pending) {
-    final newRequest = widget.newRequest;
-    if (newRequest == null) return;
-
-    final exists = pending.any((item) {
-      final timeDiff =
-          item.dateCreated.difference(newRequest.dateCreated).inMinutes.abs();
-      return item.docName == newRequest.docName &&
-          item.purpose == newRequest.purpose &&
-          timeDiff < 1;
-    });
-
-    if (!exists && !_isHistoryStatus(newRequest.status)) {
-      pending.insert(0, newRequest);
-    }
-  }
-
   String _firstText(Map<String, dynamic> item, List<String> keys) {
     for (final key in keys) {
       final value = item[key]?.toString().trim() ?? '';
@@ -289,48 +251,11 @@ class _HomeScreenState extends State<HomeScreen> {
     List<Map<String, dynamic>> transactions,
     Set<int> consumed,
   ) {
-    final requestIds = <String>{
-      _normalizedValue(request['requestId']),
-      _normalizedValue(request['id']),
-      _normalizedValue(request['_id']),
-    }..remove('');
-
-    if (requestIds.isNotEmpty) {
-      for (var index = 0; index < transactions.length; index++) {
-        if (consumed.contains(index)) continue;
-        final transactionRequestId =
-            _normalizedValue(_recordRequestId(transactions[index]));
-        if (transactionRequestId.isNotEmpty &&
-            requestIds.contains(transactionRequestId)) {
-          return index;
-        }
-      }
-    }
-
-    final docName = _normalizedValue(request['docName']);
-    final purpose = _normalizedValue(request['purpose']);
-    if (docName.isEmpty) return null;
-
-    int? closestIndex;
-    Duration? closestDistance;
-    final requestedAt = _parseRequestDate(request['createdAt']);
     for (var index = 0; index < transactions.length; index++) {
       if (consumed.contains(index)) continue;
-      final candidate = transactions[index];
-      if (_normalizedValue(candidate['docName']) != docName ||
-          _normalizedValue(candidate['purpose']) != purpose) {
-        continue;
-      }
-
-      final distance = _parseRequestDate(candidate['createdAt'])
-          .difference(requestedAt)
-          .abs();
-      if (closestDistance == null || distance < closestDistance) {
-        closestDistance = distance;
-        closestIndex = index;
-      }
+      if (requestMatchesTransaction(request, transactions[index])) return index;
     }
-    return closestIndex;
+    return null;
   }
 
   HistoryItem _historyFromRequest(
@@ -381,25 +306,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  HistoryItem _historyFromTransaction(Map<String, dynamic> item) {
-    final statusRaw = item['status']?.toString().trim() ?? 'completed';
-    return HistoryItem(
-      requestId: _recordRequestId(item),
-      transactionId: _firstText(item, const ['id', 'transactionId']),
-      title: item['docName']?.toString().trim() ?? '',
-      date: _parseRequestDate(item['createdAt']),
-      purpose: item['purpose']?.toString().trim() ?? '',
-      status: _displayStatus(statusRaw),
-      isApproved: _isApprovedStatus(statusRaw),
-      totalAmount: _parseAmount(
-        item['totalAmount'] ?? item['amount'] ?? item['documentPrice'],
-      ),
-      paymentType: _firstText(item, const ['paymentType', 'paymentMode']),
-      remarks: _recordRemarks(item),
-      refundStatus: item['refundStatus']?.toString().trim() ?? '',
-    );
-  }
-
   _MappedRequestData _mapRequestData(
     List<Map<String, dynamic>> requests,
     List<Map<String, dynamic>> transactions,
@@ -408,7 +314,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final trackingRefunds = <HistoryItem>[];
     final history = <HistoryItem>[];
     final usableTransactions = transactions
-        .where((item) => _normalizedValue(item['docName']).isNotEmpty)
+        .where((item) =>
+            _normalizedValue(item['docName']).isNotEmpty ||
+            _recordRequestId(item).isNotEmpty)
         .toList();
     final consumedTransactions = <int>{};
 
@@ -418,7 +326,22 @@ class _HomeScreenState extends State<HomeScreen> {
       final purpose = item['purpose']?.toString().trim() ?? '';
       final statusRaw = item['status']?.toString().trim() ?? 'pending';
       final createdAt = _parseRequestDate(item['createdAt']);
-      final status = _displayStatus(statusRaw);
+      final transactionIndex = _matchingTransactionIndex(
+        item,
+        usableTransactions,
+        consumedTransactions,
+      );
+      final transaction = transactionIndex == null
+          ? null
+          : usableTransactions[transactionIndex];
+      final hasSubmittedPayment = transaction != null &&
+          transactionIndicatesSubmittedPayment(
+            transaction['status']?.toString() ?? '',
+          );
+      final status = _displayStatus(
+        statusRaw,
+        hasSubmittedPayment: hasSubmittedPayment,
+      );
       final documentPrice = _parseAmount(item['documentPrice']);
       final totalAmount = _parseAmount(item['totalAmount']);
       final resolvedTotal = totalAmount > 0 ? totalAmount : documentPrice;
@@ -428,14 +351,6 @@ class _HomeScreenState extends State<HomeScreen> {
           : _firstText(item, const ['id', '_id']);
 
       if (_isHistoryStatus(statusRaw)) {
-        final transactionIndex = _matchingTransactionIndex(
-          item,
-          usableTransactions,
-          consumedTransactions,
-        );
-        final transaction = transactionIndex == null
-            ? null
-            : usableTransactions[transactionIndex];
         if (transactionIndex != null) {
           consumedTransactions.add(transactionIndex);
         }
@@ -446,6 +361,9 @@ class _HomeScreenState extends State<HomeScreen> {
           history.add(terminalItem);
         }
       } else {
+        if (hasSubmittedPayment && transactionIndex != null) {
+          consumedTransactions.add(transactionIndex);
+        }
         pending.add(
           PendingRequest(
             requestId: requestId.isEmpty ? null : requestId,
@@ -460,21 +378,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    for (var index = 0; index < usableTransactions.length; index++) {
-      if (consumedTransactions.contains(index)) continue;
-      final item = usableTransactions[index];
-      final statusRaw = item['status']?.toString().trim() ?? 'completed';
-      if (_isHistoryStatus(statusRaw)) {
-        final terminalItem = _historyFromTransaction(item);
-        if (terminalItem.shouldTrackRefund) {
-          trackingRefunds.add(terminalItem);
-        } else {
-          history.add(terminalItem);
-        }
-      }
-    }
-
-    _mergeNewRequest(pending);
     pending.sort((a, b) => b.dateCreated.compareTo(a.dateCreated));
     trackingRefunds.sort((a, b) => b.date.compareTo(a.date));
     history.sort((a, b) => b.date.compareTo(a.date));
@@ -735,22 +638,21 @@ class _HomeScreenState extends State<HomeScreen> {
   void _handleProfileChanged(ProfileData profile) {
     if (!mounted) return;
     setState(() => _profileSummary = profile);
+    // Requests are owned by user ID/email, so a display-name change must not
+    // affect visibility. Refresh immediately to verify the server-side view.
+    unawaited(_loadRequests());
   }
 
   Future<void> _openNotifications() async {
-    setState(() {
-      for (final item in _notifications) {
-        item.isRead = true;
-      }
-    });
-
     await Navigator.push<void>(
       context,
       MaterialPageRoute(
         builder: (context) => NotificationScreen(notifications: _notifications),
       ),
     );
-    if (mounted) await _loadRequests();
+    if (mounted) {
+      await Future.wait([_loadNotifications(), _loadRequests()]);
+    }
   }
 
   void _openProfile() {

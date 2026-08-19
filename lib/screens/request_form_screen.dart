@@ -2,6 +2,8 @@ import 'package:capstone_project/screens/home_screen.dart';
 import 'package:capstone_project/screens/pending_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import '../models/api_date_time.dart';
+import '../models/document_catalog.dart';
 import '../widgets/custom_font.dart';
 import '../services/mongo_data_api_service.dart';
 import '../widgets/simple_message_dialog.dart';
@@ -25,28 +27,6 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
   final TextEditingController _otherDocumentController =
       TextEditingController();
   final TextEditingController _otherPurposeController = TextEditingController();
-
-  // --- Document Price Data ---
-  final List<Map<String, dynamic>> allDocuments = [
-    {'name': 'F-137 (SH)', 'price': 400.00},
-    {'name': 'F-137 (GS/JH)', 'price': 250.00},
-    {'name': 'Transcript of Records (TOR)', 'price': 600.00},
-    {'name': 'General Weighted Average (GWA)', 'price': 250.00},
-    {'name': 'Good Moral Character/ESC (GMC/ESC)', 'price': 200.00},
-    {'name': 'Card (re-print)', 'price': 200.00},
-    {'name': 'MOI (Memorandum of Inclusion)', 'price': 250.00},
-    {'name': 'Student Verification', 'price': 250.00},
-    {'name': 'Request Form (Lost)', 'price': 200.00},
-    {'name': 'Certified True Copy (CTC)', 'price': 200.00},
-    {'name': 'Diploma (2nd Copy)', 'price': 300.00},
-    {'name': 'Application for Graduation', 'price': 200.00},
-    {'name': 'Prospectus', 'price': 200.00},
-    {'name': 'Certificate of Grades', 'price': 250.00},
-    {'name': 'Transfer Credential', 'price': 300.00},
-    {'name': 'Certificate of Enrollment', 'price': 250.00},
-    {'name': 'Clearance', 'price': 200.00},
-    {'name': 'Others', 'price': 0.00},
-  ];
 
   final List<String> purposes = [
     'Employment',
@@ -171,6 +151,7 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
     final documentPrice = _parseAmount(requestMap['documentPrice']);
     final totalAmount = _parseAmount(requestMap['totalAmount']);
     final resolvedTotal = totalAmount > 0 ? totalAmount : documentPrice;
+    final dateCreated = parseApiDateTime(requestMap['createdAt']);
     final displayStatus = statusRaw.trim().toLowerCase() == 'pending_completion'
         ? 'PENDING TO COMPLETE'
         : 'PENDING FOR PAYMENT';
@@ -184,7 +165,7 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
             status: displayStatus,
             purpose: finalPurpose,
             docName: finalDocName,
-            dateCreated: DateTime.now(),
+            dateCreated: dateCreated,
             documentPrice: documentPrice,
             totalAmount: resolvedTotal,
           ),
@@ -281,8 +262,7 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
               _buildDropdown(
                 hint: "Choose Document",
                 value: _mainDocType,
-                items:
-                    allDocuments.map((doc) => doc['name'].toString()).toList(),
+                items: documentOptions.map((doc) => doc.name).toList(),
                 onChanged: (val) => setState(() => _mainDocType = val),
                 validator: (val) {
                   if (val == null || val.trim().isEmpty) {
@@ -475,14 +455,14 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
               label: Text('Price (₱)', style: TextStyle(fontSize: 12.sp)),
             ),
           ],
-          rows: allDocuments
+          rows: documentOptions
               .map((doc) => DataRow(
                     cells: [
                       DataCell(
                         SizedBox(
                           width: 200.w,
                           child: Text(
-                            doc['name'],
+                            doc.name,
                             style: TextStyle(
                                 fontSize: 11.sp, color: Colors.black87),
                             overflow: TextOverflow.ellipsis,
@@ -491,9 +471,9 @@ class _RequestFormScreenState extends State<RequestFormScreen> {
                       ),
                       DataCell(
                         Text(
-                          doc['price'] == 0.00
+                          doc.price == 0
                               ? 'Varies'
-                              : '${doc['price'].toStringAsFixed(2)}',
+                              : doc.price.toStringAsFixed(2),
                           style: TextStyle(
                               fontSize: 11.sp,
                               fontWeight: FontWeight.w600,
@@ -560,9 +540,8 @@ class SuccessfulScreen extends StatelessWidget {
                   Navigator.pushAndRemoveUntil(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => HomeScreen(
+                      builder: (context) => const HomeScreen(
                         initialIndex: 1,
-                        newRequest: request,
                       ),
                     ),
                     (route) => false,

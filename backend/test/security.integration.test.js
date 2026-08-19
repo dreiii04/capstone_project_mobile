@@ -5,7 +5,10 @@ import { after, before, describe, test } from 'node:test';
 
 import jwt from 'jsonwebtoken';
 
-import { memoryUsers } from '../components/models/memory-store.js';
+import {
+  memoryRequests,
+  memoryUsers,
+} from '../components/models/memory-store.js';
 
 const JWT_SECRET =
   'security-integration-test-secret-with-more-than-thirty-two-bytes';
@@ -628,8 +631,8 @@ describe('backend security integration', { concurrency: false }, () => {
       method: 'PUT',
       headers: bearer(accessToken),
       json: {
-        firstName: 'Security',
-        lastName: 'Tester',
+        firstName: 'Renamed',
+        lastName: 'Account',
         schoolEmail: '',
         personalEmail: email,
         studentId: '',
@@ -649,6 +652,73 @@ describe('backend security integration', { concurrency: false }, () => {
     assert.equal(updated.json?.user?.isAdmin, undefined);
     assert.equal(updated.json?.user?.permissions, undefined);
     assert.equal(updated.json?.user?.passwordHash, undefined);
+  });
+
+  test('name edit followed by one login always returns the same requests', async () => {
+    const createdIds = [
+      'req_single_login_regression_a',
+      'req_single_login_regression_b',
+    ];
+    memoryRequests.push(...createdIds.map((requestId, index) => ({
+      _id: `single-login-regression-${index}`,
+      requestId,
+      userId,
+      email,
+      name: 'Security Tester',
+      docName: 'Certificate of Grades',
+      documentType: 'Certificate of Grades',
+      purpose: `Single-login regression ${index + 1}`,
+      status: 'Pending',
+      mobileStatus: 'pending_payment',
+      createdAt: new Date(Date.now() + index).toISOString(),
+      updatedAt: new Date(Date.now() + index).toISOString(),
+    })));
+
+    const ownerIdsBefore = memoryRequests
+      .filter((item) => createdIds.includes(item.requestId))
+      .map((item) => String(item.userId || ''));
+    assert.deepEqual(ownerIdsBefore, [userId, userId]);
+
+    const ownerIdsAfter = memoryRequests
+      .filter((item) => createdIds.includes(item.requestId))
+      .map((item) => String(item.userId || ''));
+    assert.deepEqual(ownerIdsAfter, ownerIdsBefore);
+
+    // The first login is the regression boundary: no second login or refresh
+    // may be needed before these records become visible.
+    for (let loginNumber = 1; loginNumber <= 1; loginNumber += 1) {
+      const loggedOut = await request(baseUrl, '/auth/logout', {
+        json: { email, refreshToken },
+      });
+      assert.equal(loggedOut.response.status, 200, loggedOut.text);
+
+      const loggedIn = await request(baseUrl, '/auth/login', {
+        json: { email, password },
+      });
+      assert.equal(
+        loggedIn.response.status,
+        200,
+        `Login ${loginNumber}: ${loggedIn.text}`,
+      );
+      assert.equal(loggedIn.json?.user?.id, userId);
+      accessToken = loggedIn.json.accessToken;
+      refreshToken = loggedIn.json.refreshToken;
+
+      const listed = await request(baseUrl, '/requests', {
+        headers: bearer(accessToken),
+      });
+      assert.equal(listed.response.status, 200, listed.text);
+      const visibleIds = new Set(
+        (listed.json?.requests || []).map((item) => item.requestId),
+      );
+      for (const requestId of createdIds) {
+        assert.equal(
+          visibleIds.has(requestId),
+          true,
+          `Request ${requestId} missing immediately after login ${loginNumber}`,
+        );
+      }
+    }
   });
 
   test('receipt image validation rejects spoofed image bytes without throwing', async () => {
@@ -747,6 +817,107 @@ describe('backend security integration', { concurrency: false }, () => {
     );
   });
 
+  test('a name change cannot hide legacy history with a blank user ID', async () => {
+    const legacyRequest = {
+      _id: 'legacy-name-history-request',
+      requestId: 'req_legacy_name_history',
+      userId: '',
+      email,
+      name: 'Previous Display Name',
+      docName: 'Certificate of Grades',
+      documentType: 'Certificate of Grades',
+      purpose: 'Name-independent ownership test',
+      status: 'Rejected',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    memoryRequests.push(legacyRequest);
+
+    try {
+      const response = await request(baseUrl, '/requests', {
+        headers: bearer(accessToken),
+      });
+      assert.equal(response.response.status, 200, response.text);
+      assert.equal(
+        response.json?.requests?.some(
+          (item) => item.requestId === legacyRequest.requestId,
+        ),
+        true,
+        response.text,
+      );
+    } finally {
+      const index = memoryRequests.indexOf(legacyRequest);
+      if (index >= 0) memoryRequests.splice(index, 1);
+    }
+  });
+
+  test('notifications stay unread until explicitly marked read', async () => {
+    const created = await request(baseUrl, '/notifications', {
+      headers: { 'x-notification-key': NOTIFICATIONS_API_KEY },
+      json: {
+        email,
+        title: 'Unread behavior test',
+        message: 'Opening the notification list must not read this item.',
+      },
+    });
+    assert.equal(created.response.status, 201, created.text);
+
+    const before = await request(baseUrl, '/notifications', {
+      headers: bearer(accessToken),
+    });
+    assert.equal(before.response.status, 200, before.text);
+    const notification = before.json?.notifications?.find(
+      (item) => item.id === created.json?.notificationId,
+    );
+    assert(notification, before.text);
+    assert.equal(notification.isRead, false);
+
+    const marked = await request(
+      baseUrl,
+      `/notifications/${created.json.notificationId}/read`,
+      { method: 'PUT', headers: bearer(accessToken), json: {} },
+    );
+    assert.equal(marked.response.status, 200, marked.text);
+
+    const after = await request(baseUrl, '/notifications', {
+      headers: bearer(accessToken),
+    });
+    const updated = after.json?.notifications?.find(
+      (item) => item.id === created.json?.notificationId,
+    );
+    assert.equal(updated?.isRead, true, after.text);
+
+    const markedAll = await request(baseUrl, '/notifications/mark-all-read', {
+      method: 'PUT',
+      headers: bearer(accessToken),
+      json: {},
+    });
+    assert.equal(markedAll.response.status, 200, markedAll.text);
+    assert.equal(
+      typeof markedAll.json?.updatedCount,
+      'number',
+      markedAll.text,
+    );
+
+    const dismissed = await request(
+      baseUrl,
+      `/notifications/${created.json.notificationId}`,
+      { method: 'DELETE', headers: bearer(accessToken) },
+    );
+    assert.equal(dismissed.response.status, 200, dismissed.text);
+
+    const afterDismiss = await request(baseUrl, '/notifications', {
+      headers: bearer(accessToken),
+    });
+    assert.equal(
+      afterDismiss.json?.notifications?.some(
+        (item) => item.id === created.json?.notificationId,
+      ),
+      false,
+      afterDismiss.text,
+    );
+  });
+
   test('record IDs cannot be used to access another user\'s request', async () => {
     const otherEmail = 'other.owner@example.test';
     const otherRegistration = await request(
@@ -828,6 +999,7 @@ describe('backend security integration', { concurrency: false }, () => {
       json: { docName, purpose },
     });
     assert.equal(created.response.status, 201, created.text);
+    assert.equal(created.json?.persisted, false);
     const requestId = created.json?.request?.requestId;
     assert.match(String(requestId || ''), /^req_/);
 

@@ -170,7 +170,9 @@ function buildConfig(env) {
       enabled: databaseEnabled,
       uri: mongoUri,
       uriIsValid: mongoUriIsValid,
-      name: String(env.MONGODB_DB_NAME || 'test'),
+      // Existing production data lives in the legacy database named "test".
+      // Deployments should still set this explicitly to prevent ambiguity.
+      name: String(env.MONGODB_DB_NAME || 'test').trim(),
       alumniCollection: String(
         env.MONGODB_ALUMNI_COLLECTION ||
           env.MONGODB_USERS_COLLECTION ||

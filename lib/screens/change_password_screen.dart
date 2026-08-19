@@ -115,6 +115,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
       }
       if (!mounted) return;
 
+      setState(() => _isSubmitting = false);
       TextInput.finishAutofillContext();
       await showSimpleMessageDialog(
         context,
@@ -124,13 +125,12 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
       if (mounted) Navigator.pop(context, true);
     } catch (error) {
       if (!mounted) return;
+      setState(() => _isSubmitting = false);
       await showSimpleMessageDialog(
         context,
         error.toString().replaceFirst('Exception: ', ''),
         title: 'Could not change password',
       );
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
@@ -320,9 +320,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
           tooltip: visible ? 'Hide password' : 'Show password',
           onPressed: onToggle,
           icon: Icon(
-            visible
-                ? Icons.visibility_outlined
-                : Icons.visibility_off_outlined,
+            visible ? Icons.visibility_outlined : Icons.visibility_off_outlined,
           ),
         ),
         filled: true,
@@ -351,11 +349,13 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
             color: met ? const Color(0xFF2E7D32) : const Color(0xFF82909A),
           ),
           const SizedBox(width: 8),
-          Text(
-            label,
-            style: TextStyle(
-              color: met ? const Color(0xFF2E7D32) : const Color(0xFF687680),
-              fontSize: 13,
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: met ? const Color(0xFF2E7D32) : const Color(0xFF687680),
+                fontSize: 13,
+              ),
             ),
           ),
         ],

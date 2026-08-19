@@ -1,5 +1,6 @@
 class ProfileData {
   const ProfileData({
+    this.id = '',
     required this.firstName,
     required this.lastName,
     required this.studentId,
@@ -11,6 +12,9 @@ class ProfileData {
     this.profileImageUrl = '',
   });
 
+  /// Permanent database account ID. This must not change when editable
+  /// profile fields such as the display name change.
+  final String id;
   final String firstName;
   final String lastName;
   final String studentId;
@@ -120,6 +124,7 @@ class ProfileData {
     final profilePic = readString('profilePic');
 
     return ProfileData(
+      id: readString('id').isNotEmpty ? readString('id') : readString('_id'),
       firstName: readString('firstName'),
       lastName: readString('lastName'),
       studentId: readString('studentId'),

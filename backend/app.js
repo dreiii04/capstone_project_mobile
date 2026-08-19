@@ -53,9 +53,9 @@ import {
   validateUploadedImage,
 } from './components/middleware/upload.middleware.js';
 import {
-  defaultDocumentPrice,
   defaultProcessingFee,
   getDocumentPrice,
+  resolveDocumentPricing,
 } from './components/models/document.model.js';
 import {
   memoryNotifications,
@@ -661,20 +661,116 @@ function buildMongoOwnerClauses(user) {
       clauses.push({ userId: new ObjectId(stringId) });
     }
     clauses.push({ userId: stringId });
-    return clauses;
   }
   const email = normalizeEmail(user?.email);
-  if (isValidEmail(email)) clauses.push({ email });
+  if (isValidEmail(email)) {
+    const missingUserId = {
+      $or: [
+        { userId: { $exists: false } },
+        { userId: null },
+        { userId: '' },
+      ],
+    };
+    for (const emailField of ['email', 'payerEmail', 'studentEmail']) {
+      clauses.push({
+        $and: [missingUserId, { [emailField]: email }],
+      });
+    }
+  }
   return clauses;
 }
 
 function recordBelongsToUser(record, user) {
   const userId = user?._id || user?.id;
   const email = normalizeEmail(user?.email);
-  if (userId) {
-    return String(record?.userId || '') === String(userId);
+  const recordUserId = String(record?.userId || '').trim();
+  if (recordUserId) {
+    return Boolean(userId && recordUserId === String(userId));
   }
-  return Boolean(email && normalizeEmail(record?.email) === email);
+  if (!isValidEmail(email)) return false;
+  return [record?.email, record?.payerEmail, record?.studentEmail]
+    .some((value) => normalizeEmail(value) === email);
+}
+
+const ownedRecordStores = [
+  {
+    collection: () => requests,
+    memory: memoryRequests,
+    emailFields: ['email'],
+    canonicalEmailField: 'email',
+  },
+  {
+    collection: () => transactions,
+    memory: memoryTransactions,
+    emailFields: ['payerEmail', 'email'],
+    canonicalEmailField: 'payerEmail',
+  },
+  {
+    collection: () => notifications,
+    memory: memoryNotifications,
+    emailFields: ['email'],
+    canonicalEmailField: 'email',
+  },
+  {
+    collection: () => refunds,
+    memory: memoryRefunds,
+    emailFields: ['studentEmail', 'email'],
+    canonicalEmailField: 'email',
+  },
+];
+
+/// Canonicalize legacy ownership before an authenticated response is issued.
+/// Editable names are deliberately not read or written here: account `sub`
+/// and normalized email are the only safe ownership keys.
+async function repairOwnedRecordsForUser(user) {
+  const userId = String(user?._id || user?.id || '').trim();
+  const email = normalizeEmail(user?.email);
+  if (!userId || !isValidEmail(email)) return;
+
+  if (!dbEnabled) {
+    for (const store of ownedRecordStores) {
+      for (const record of store.memory) {
+        if (!recordBelongsToUser(record, user)) continue;
+        record.userId = userId;
+        record[store.canonicalEmailField] = email;
+      }
+    }
+    return;
+  }
+
+  const missingUserId = {
+    $or: [
+      { userId: { $exists: false } },
+      { userId: null },
+      { userId: '' },
+    ],
+  };
+  for (const store of ownedRecordStores) {
+    const collection = store.collection();
+    if (!collection) continue;
+    if (ObjectId.isValid(userId)) {
+      await collection.updateMany(
+        { userId: new ObjectId(userId) },
+        { $set: { userId } },
+      );
+    }
+    await collection.updateMany(
+      {
+        $and: [
+          missingUserId,
+          {
+            $or: store.emailFields.map((field) => ({ [field]: email })),
+          },
+        ],
+      },
+      {
+        $set: {
+          userId,
+          [store.canonicalEmailField]: email,
+        },
+      },
+    );
+  }
 }
 
 async function findLatestRequestForUser(user, {
@@ -704,7 +800,7 @@ async function findLatestRequestForUser(user, {
         matchClauses.push({ _id: new ObjectId(normalizedRequestId) });
       }
     }
-    if (normalizedDocName || normalizedPurpose) {
+    if (!normalizedRequestId && (normalizedDocName || normalizedPurpose)) {
       const details = {};
       if (normalizedDocName) details.docName = normalizedDocName;
       if (normalizedPurpose) details.purpose = normalizedPurpose;
@@ -758,15 +854,17 @@ async function findLinkedRequestForTransaction(user, transaction) {
 function requestMatchesTransaction(request, transaction) {
   if (!request || !transaction) return false;
   const transactionRequestId = getStoredRequestId(transaction);
-  if (transactionRequestId) {
-    const requestIdentifiers = [
-      request._id,
-      request.id,
-      request.requestId,
-      request.request_id,
-      request.linkedRequestId,
-    ].map((value) => firstNonEmptyString(value));
-    if (requestIdentifiers.includes(transactionRequestId)) return true;
+  const requestIdentifiers = [
+    request._id,
+    request.id,
+    request.requestId,
+    request.request_id,
+    request.linkedRequestId,
+  ].map((value) => firstNonEmptyString(value)).filter(Boolean);
+  if (transactionRequestId || requestIdentifiers.length > 0) {
+    return Boolean(
+      transactionRequestId && requestIdentifiers.includes(transactionRequestId),
+    );
   }
 
   const transactionDocName = firstNonEmptyString(
@@ -782,7 +880,12 @@ function requestMatchesTransaction(request, transaction) {
   const transactionPurpose = firstNonEmptyString(transaction.purpose);
   const requestPurpose = firstNonEmptyString(request.purpose);
   const hasDetails = Boolean(transactionDocName || transactionPurpose);
-  return hasDetails &&
+  const requestTime = new Date(request.createdAt || request.dateRequested).getTime();
+  const transactionTime = new Date(transaction.createdAt || transaction.date).getTime();
+  const isCloseInTime = Number.isFinite(requestTime) &&
+    Number.isFinite(transactionTime) &&
+    Math.abs(transactionTime - requestTime) <= 5 * 60 * 1000;
+  return hasDetails && isCloseInTime &&
     (!transactionDocName || transactionDocName === requestDocName) &&
     (!transactionPurpose || transactionPurpose === requestPurpose);
 }
@@ -890,6 +993,16 @@ async function createRequestRecord(request) {
       request.requestId = makeRequestId();
     }
     const result = await requests.insertOne(request);
+    if (!result.acknowledged || !result.insertedId) {
+      throw new Error('MongoDB did not acknowledge the request write.');
+    }
+    const persisted = await requests.findOne({
+      _id: result.insertedId,
+      requestId: request.requestId,
+    });
+    if (!persisted) {
+      throw new Error('The request could not be verified after creation.');
+    }
     return result.insertedId;
   }
 
@@ -966,6 +1079,84 @@ async function listTransactionsForUser(user, limit) {
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )
     .slice(0, safeLimit);
+}
+
+async function markNotificationReadForUser(user, notificationId) {
+  const normalizedId = firstNonEmptyString(notificationId);
+  const ownerClauses = buildMongoOwnerClauses(user);
+  if (!normalizedId || ownerClauses.length === 0) return false;
+
+  if (dbEnabled) {
+    const idClauses = [{ id: normalizedId }];
+    if (ObjectId.isValid(normalizedId)) {
+      idClauses.push({ _id: new ObjectId(normalizedId) });
+    }
+    const result = await notifications.updateOne(
+      { $and: [{ $or: ownerClauses }, { $or: idClauses }] },
+      { $set: { isRead: true, readAt: new Date().toISOString() } },
+    );
+    return result.matchedCount === 1;
+  }
+
+  const record = memoryNotifications.find((candidate) =>
+    recordBelongsToUser(candidate, user) &&
+    [candidate._id, candidate.id]
+      .map((value) => firstNonEmptyString(value))
+      .includes(normalizedId));
+  if (!record) return false;
+  record.isRead = true;
+  record.readAt = new Date().toISOString();
+  return true;
+}
+
+async function markAllNotificationsReadForUser(user) {
+  const ownerClauses = buildMongoOwnerClauses(user);
+  if (ownerClauses.length === 0) return 0;
+  const readAt = new Date().toISOString();
+
+  if (dbEnabled) {
+    const result = await notifications.updateMany(
+      { $and: [{ $or: ownerClauses }, { isRead: { $ne: true } }] },
+      { $set: { isRead: true, readAt } },
+    );
+    return result.modifiedCount;
+  }
+
+  let updatedCount = 0;
+  for (const record of memoryNotifications) {
+    if (recordBelongsToUser(record, user) && !record.isRead) {
+      record.isRead = true;
+      record.readAt = readAt;
+      updatedCount += 1;
+    }
+  }
+  return updatedCount;
+}
+
+async function dismissNotificationForUser(user, notificationId) {
+  const normalizedId = firstNonEmptyString(notificationId);
+  const ownerClauses = buildMongoOwnerClauses(user);
+  if (!normalizedId || ownerClauses.length === 0) return false;
+
+  if (dbEnabled) {
+    const idClauses = [{ id: normalizedId }];
+    if (ObjectId.isValid(normalizedId)) {
+      idClauses.push({ _id: new ObjectId(normalizedId) });
+    }
+    const result = await notifications.deleteOne({
+      $and: [{ $or: ownerClauses }, { $or: idClauses }],
+    });
+    return result.deletedCount === 1;
+  }
+
+  const index = memoryNotifications.findIndex((candidate) =>
+    recordBelongsToUser(candidate, user) &&
+    [candidate._id, candidate.id]
+      .map((value) => firstNonEmptyString(value))
+      .includes(normalizedId));
+  if (index < 0) return false;
+  memoryNotifications.splice(index, 1);
+  return true;
 }
 
 async function listRefundsForUser(user, limit = 200) {
@@ -1161,8 +1352,14 @@ function buildTransactionResponse(
     record.paymentType,
     record.paymentMode,
   );
-  const totalAmount =
-    record.totalAmount ?? record.amount ?? record.originalAmount ?? null;
+  const storedAmount = toNonNegativeNumber(
+    record.totalAmount ?? record.amount ?? record.originalAmount,
+    0,
+  );
+  const linkedAmount = linkedRequest
+    ? resolveDocumentPricing(linkedRequest).totalAmount
+    : 0;
+  const totalAmount = storedAmount > 0 ? storedAmount : linkedAmount;
   const refund = buildRefundGuidance({
     status,
     amount: totalAmount,
@@ -1549,20 +1746,8 @@ function buildRequestResponse(record) {
   if (!record) return null;
   const id = record._id || record.id;
   const docName = firstNonEmptyString(record.docName, record.documentType);
-  const mappedPrice = getDocumentPrice(docName);
-  const storedPrice = record.documentPrice;
-  const documentPrice =
-    storedPrice == null || storedPrice === defaultDocumentPrice
-      ? mappedPrice
-      : toNonNegativeNumber(storedPrice, mappedPrice);
-  const processingFee = toNonNegativeNumber(
-    record.processingFee,
-    defaultProcessingFee,
-  );
-  const totalAmount = toNonNegativeNumber(
-    record.totalAmount,
-    documentPrice + processingFee,
-  );
+  const { documentPrice, processingFee, totalAmount } =
+    resolveDocumentPricing({ ...record, docName });
   const requestId = getRequestResponseId(record);
   const status = firstNonEmptyString(
     resolveWorkflowStatus(record, { preferMobile: true }),
@@ -2154,18 +2339,10 @@ app.post(
         linkedRequest.documentType,
       );
       const purpose = firstNonEmptyString(linkedRequest.purpose);
-      const documentPrice = toNonNegativeNumber(
-        linkedRequest.documentPrice,
-        getDocumentPrice(docName),
-      );
-      const processingFee = toNonNegativeNumber(
-        linkedRequest.processingFee,
-        defaultProcessingFee,
-      );
-      const amount = toNonNegativeNumber(
-        linkedRequest.totalAmount,
-        documentPrice + processingFee,
-      );
+      const { totalAmount: amount } = resolveDocumentPricing({
+        ...linkedRequest,
+        docName,
+      });
 
       const uploadResult = await uploadReceipt(
         req.file,
@@ -2312,20 +2489,30 @@ app.post('/requests', requireAuth, writeLimiter, async (req, res, next) => {
     const requestId = await createRequestRecord(requestRecord);
     
     const notificationCreatedAt = new Date().toISOString();
-    await createNotificationRecord({
-      title: 'Request submitted',
-      message:
-        `Your request for ${docName} was submitted. ` +
-        'Status: pending for payment. Follow updates in Tracking.',
-      isRead: false,
-      email: normalizeEmail(user.email),
-      userId: user._id || user.id,
-      createdAt: notificationCreatedAt,
-      updatedAt: notificationCreatedAt,
-    });
+    try {
+      await createNotificationRecord({
+        title: 'Request submitted',
+        message:
+          `Your request for ${docName} was submitted. ` +
+          'Status: pending for payment. Follow updates in Tracking.',
+        isRead: false,
+        email: normalizeEmail(user.email),
+        userId: user._id || user.id,
+        createdAt: notificationCreatedAt,
+        updatedAt: notificationCreatedAt,
+      });
+    } catch (notificationError) {
+      // The request is already durable. Returning an error here would invite a
+      // duplicate submission even though only the notification failed.
+      console.error(
+        `Failed to create submission notification for ${requestRecord.requestId}:`,
+        notificationError,
+      );
+    }
 
     return res.status(201).json({
       success: true,
+      persisted: dbEnabled,
       requestId: String(requestId),
       request: buildRequestResponse({
         ...requestRecord,
@@ -2735,6 +2922,57 @@ app.post('/refunds', requireAuth, writeLimiter, async (req, res, next) => {
   }
 });
 
+app.put('/notifications/mark-all-read', requireAuth, writeLimiter, async (req, res, next) => {
+  try {
+    const user = await getUserFromAuth(req.auth);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+    const updatedCount = await markAllNotificationsReadForUser(user);
+    return res.json({ success: true, updatedCount });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.put('/notifications/:id/read', requireAuth, writeLimiter, async (req, res, next) => {
+  try {
+    const user = await getUserFromAuth(req.auth);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+    const updated = await markNotificationReadForUser(user, req.params.id);
+    if (!updated) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found.',
+      });
+    }
+    return res.json({ success: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.delete('/notifications/:id', requireAuth, writeLimiter, async (req, res, next) => {
+  try {
+    const user = await getUserFromAuth(req.auth);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+    const dismissed = await dismissNotificationForUser(user, req.params.id);
+    if (!dismissed) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found.',
+      });
+    }
+    return res.json({ success: true, id: req.params.id });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 app.post(
   '/profile/photo',
   requireAuth,
@@ -2860,6 +3098,7 @@ app.put('/profile', requireAuth, writeLimiter, async (req, res, next) => {
     await updateUserProfile(user, updates);
 
     const refreshed = await getUserById(String(user._id || user.id || ''));
+    await repairOwnedRecordsForUser(refreshed || user);
     return res.json({
       success: true,
       message: 'Profile updated.',
@@ -3169,6 +3408,11 @@ app.post(
         message: inactiveAccountMessage,
       });
     }
+
+    // Await ownership normalization before returning the session. The first
+    // request fetch after login must see the same account data as every later
+    // fetch; a second login must never be required to finish migration work.
+    await repairOwnedRecordsForUser(user);
 
     const session = await issueTokensForUser(user);
     if (!session) {

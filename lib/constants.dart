@@ -5,7 +5,7 @@ class ApiConstants {
 
   static const String baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'https://verifitor-backend.vercel.app/api',
+    defaultValue: 'https://cp-three-lemon.vercel.app/api',
   );
 
   static Uri uri(String path) {
